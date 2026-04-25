@@ -3,34 +3,55 @@ using UnityEngine;
 
 public sealed class GlassLiquidView : MonoBehaviour
 {
-    private const float InteriorBottomLocalY = 0.18f;
-    private const float UnitHeight = 0.44f;
-    private const float InteriorRadius = 0.42f;
-    private const float MeshTopLocalY = 4.5f;
-    private const float RimLocalY = 2.18f;
     private const int RadialSegments = 24;
     private const int VerticalSegments = 14;
     private const int MaxLayerSlots = 6;
     private const int IgnoreRaycastLayer = 2;
 
+    // The surface disc is built unit-radius and scaled so it always covers the largest possible
+    // body cross-section even at extreme tilts. The shader clips to the implicit body cylinder
+    // so any extra disc radius outside the glass is discarded.
+    private const float SurfaceDiscOversize = 2.5f;
+
     private readonly List<DisplayLayer> displayLayers = new List<DisplayLayer>();
 
     private Transform liquidRoot;
+    private Transform liquidColumnTransform;
     private MeshRenderer liquidRenderer;
+    private GameObject surfaceObject;
+    private Transform surfaceTransform;
+    private MeshRenderer surfaceRenderer;
     private Material liquidMaterial;
     private GlassState boundState;
     private HexSortMaterialLibrary materials;
     private int capacity;
+    private float interiorBottomLocalY;
+    private float unitHeight;
+    private float interiorBottomRadius;
+    private float interiorTopRadius;
+    private float meshTopLocalY;
+    private float rimLocalY;
 
     private LiquidColorId previewColor;
     private float previewUnits;
     private LiquidDynamicsSample dynamics;
+    private LiquidDynamicsSample previousDynamics;
+    private bool hasPreviousDynamics;
     private float currentAgitation;
     private float wobbleSeed;
-    private float currentLeanX;
-    private float currentLeanZ;
 
-    public void Initialize(Transform renderRoot, GlassState state, HexSortMaterialLibrary materialLibrary, int maxCapacity)
+    // 2D damped-spring slosh state in world XZ. Driven by glass acceleration.
+    private Vector2 sloshOffset;
+    private Vector2 sloshVelocity;
+
+    [Header("Slosh Tuning")]
+    [SerializeField] private float sloshStiffness = 90f;
+    [SerializeField] private float sloshDamping = 11f;
+    [SerializeField] private float sloshSensitivity = 0.45f;
+    [SerializeField] private float sloshMaxAmplitude = 0.18f;
+
+    public void Initialize(Transform renderRoot, GlassState state, HexSortMaterialLibrary materialLibrary, int maxCapacity,
+        float interiorBottomLocalY, float unitHeight, float interiorBottomRadius, float interiorTopRadius, float meshTopLocalY, float rimLocalY)
     {
         liquidRoot = renderRoot;
         boundState = state;
@@ -38,7 +59,14 @@ public sealed class GlassLiquidView : MonoBehaviour
         capacity = Mathf.Min(maxCapacity, MaxLayerSlots);
         wobbleSeed = Mathf.Abs(GetInstanceID() * 0.137f) % 17f;
 
-        BuildMesh();
+        this.interiorBottomLocalY = interiorBottomLocalY;
+        this.unitHeight = unitHeight;
+        this.interiorBottomRadius = interiorBottomRadius;
+        this.interiorTopRadius = interiorTopRadius;
+        this.meshTopLocalY = meshTopLocalY;
+        this.rimLocalY = rimLocalY;
+
+        BuildRenderer();
         RefreshGeometry();
     }
 
@@ -61,6 +89,11 @@ public sealed class GlassLiquidView : MonoBehaviour
         dynamics = sample;
     }
 
+    public void AddSloshImpulse(Vector3 worldImpulse)
+    {
+        sloshVelocity += new Vector2(worldImpulse.x, worldImpulse.z);
+    }
+
     public void RefreshGeometry()
     {
         if (boundState == null || liquidRoot == null || liquidMaterial == null)
@@ -69,6 +102,7 @@ public sealed class GlassLiquidView : MonoBehaviour
         }
 
         BuildDisplayLayers();
+        ApplyLayersToMaterial();
     }
 
     private void LateUpdate()
@@ -84,41 +118,61 @@ public sealed class GlassLiquidView : MonoBehaviour
             return;
         }
 
+        UpdateSloshState(deltaTime);
+
         float agitationTarget = Mathf.Clamp01(
             dynamics.Agitation +
+            sloshOffset.magnitude * 0.6f +
             (dynamics.IsPouring ? 0.30f : 0f) +
             (dynamics.IsHeld ? 0.10f : 0f));
         currentAgitation = Mathf.Lerp(currentAgitation, agitationTarget, 1f - Mathf.Exp(-6f * deltaTime));
 
-        float wobbleAmount = Mathf.Lerp(0.010f, 0.030f, currentAgitation);
-        float wobbleSpeed = Mathf.Lerp(1.4f, 3.4f, currentAgitation);
+        float wobbleAmount = Mathf.Lerp(0.012f, 0.045f, currentAgitation);
+        float wobbleSpeed = Mathf.Lerp(1.6f, 4.2f, currentAgitation);
         liquidMaterial.SetFloat("_WobbleAmount", wobbleAmount);
         liquidMaterial.SetFloat("_WobbleSpeed", wobbleSpeed);
         liquidMaterial.SetFloat("_WobbleSeed", wobbleSeed);
 
-        Vector3 horizontalLean = Vector3.ProjectOnPlane(dynamics.ContainerUp, Vector3.up);
-        if (horizontalLean.sqrMagnitude < 0.0001f)
+        Vector2 sloshTilt = sloshOffset;
+        float tiltMag = sloshTilt.magnitude;
+        if (tiltMag > sloshMaxAmplitude)
         {
-            horizontalLean = Vector3.zero;
+            sloshTilt = sloshTilt * (sloshMaxAmplitude / tiltMag);
         }
 
-        float maxLeanPerMeter = 0.16f;
-        float targetLeanX = -horizontalLean.x * maxLeanPerMeter * dynamics.FlowReadiness;
-        float targetLeanZ = -horizontalLean.z * maxLeanPerMeter * dynamics.FlowReadiness;
-
-        currentLeanX = Mathf.Lerp(currentLeanX, targetLeanX, 1f - Mathf.Exp(-7f * deltaTime));
-        currentLeanZ = Mathf.Lerp(currentLeanZ, targetLeanZ, 1f - Mathf.Exp(-7f * deltaTime));
-
-        liquidMaterial.SetFloat("_LeanX", currentLeanX);
-        liquidMaterial.SetFloat("_LeanZ", currentLeanZ);
-        liquidMaterial.SetFloat("_LeanCenterX", transform.position.x);
-        liquidMaterial.SetFloat("_LeanCenterZ", transform.position.z);
+        liquidMaterial.SetFloat("_SloshX", sloshTilt.x);
+        liquidMaterial.SetFloat("_SloshZ", sloshTilt.y);
+        liquidMaterial.SetFloat("_GlassCenterX", transform.position.x);
+        liquidMaterial.SetFloat("_GlassCenterZ", transform.position.z);
 
         float fillLevel = ComputeFillLevelWorldY();
-        liquidMaterial.SetFloat("_FillLevel", fillLevel);
-        liquidMaterial.SetFloat("_BottomLevel", transform.position.y + InteriorBottomLocalY - 0.08f);
+        PushFillUniforms(fillLevel);
+        UpdateSurfaceDisc(fillLevel);
+        UpdateLayerBoundaries(fillLevel);
+        UpdateRendererVisibility();
+    }
 
-        ApplyLayersToMaterial();
+    private void UpdateSloshState(float deltaTime)
+    {
+        Vector3 currentVel = dynamics.LinearVelocity;
+        Vector3 prevVel = hasPreviousDynamics ? previousDynamics.LinearVelocity : currentVel;
+        Vector3 accel = (currentVel - prevVel) / Mathf.Max(0.0001f, deltaTime);
+        Vector2 accelXZ = new Vector2(accel.x, accel.z);
+
+        Vector2 force = -accelXZ * sloshSensitivity
+                        - sloshOffset * sloshStiffness
+                        - sloshVelocity * sloshDamping;
+        sloshVelocity += force * deltaTime;
+        sloshOffset += sloshVelocity * deltaTime;
+
+        const float maxOffset = 0.5f;
+        if (sloshOffset.sqrMagnitude > maxOffset * maxOffset)
+        {
+            sloshOffset = sloshOffset.normalized * maxOffset;
+        }
+
+        previousDynamics = dynamics;
+        hasPreviousDynamics = true;
     }
 
     private float ComputeFillLevelWorldY()
@@ -129,39 +183,154 @@ public sealed class GlassLiquidView : MonoBehaviour
             return transform.position.y - 100f;
         }
 
-        float fillLocalHeight = totalUnits * UnitHeight;
-        float fillLocalTop = InteriorBottomLocalY + fillLocalHeight;
+        float fillLocalHeight = totalUnits * unitHeight;
+        float fillLocalTop = interiorBottomLocalY + fillLocalHeight;
         float uprightFillLevel = transform.position.y + fillLocalTop;
 
+        // Cap at the rim's lowest point in world so liquid can never visually overflow.
         Vector3 glassUp = transform.up;
         float upY = Mathf.Max(0.05f, glassUp.y);
-        float rimCenterWorldY = transform.position.y + (upY * RimLocalY);
+        float rimCenterWorldY = transform.position.y + (upY * rimLocalY);
         float rimSafeWorldY = rimCenterWorldY - 0.05f;
 
         return Mathf.Min(uprightFillLevel, rimSafeWorldY);
     }
 
-    private void BuildMesh()
+    private void PushFillUniforms(float fillLevel)
+    {
+        liquidMaterial.SetFloat("_FillLevel", fillLevel);
+
+        // Implicit-body-cylinder uniforms used by the surface fragment for clipping.
+        Vector3 up = transform.up;
+        liquidMaterial.SetVector("_GlassCenter", new Vector4(transform.position.x, transform.position.y, transform.position.z, 0f));
+        liquidMaterial.SetVector("_GlassUp", new Vector4(up.x, up.y, up.z, 0f));
+        liquidMaterial.SetFloat("_BodyBottomLocalY", interiorBottomLocalY);
+        liquidMaterial.SetFloat("_BodyTopLocalY", rimLocalY);
+        liquidMaterial.SetFloat("_BodyBottomRadius", interiorBottomRadius);
+        liquidMaterial.SetFloat("_BodyTopRadius", interiorTopRadius);
+    }
+
+    private void UpdateSurfaceDisc(float fillLevel)
+    {
+        if (surfaceTransform == null)
+        {
+            return;
+        }
+
+        bool empty = GetTotalUnits() <= 0.001f;
+        if (empty)
+        {
+            if (surfaceObject.activeSelf)
+            {
+                surfaceObject.SetActive(false);
+            }
+            return;
+        }
+
+        if (!surfaceObject.activeSelf)
+        {
+            surfaceObject.SetActive(true);
+        }
+
+        // Always-horizontal world-space disc: the fragment shader clips it to the actual body
+        // cross-section so we can use a generous size without worrying about overflow.
+        surfaceTransform.position = new Vector3(transform.position.x, fillLevel, transform.position.z);
+        surfaceTransform.rotation = Quaternion.identity;
+
+        float horizontalScale = liquidColumnTransform != null
+            ? Mathf.Max(0.0001f, liquidColumnTransform.lossyScale.x)
+            : 1f;
+        float maxRadius = Mathf.Max(interiorBottomRadius, interiorTopRadius) * horizontalScale * SurfaceDiscOversize;
+        surfaceTransform.localScale = new Vector3(maxRadius, 1f, maxRadius);
+    }
+
+    private void UpdateLayerBoundaries(float fillLevel)
+    {
+        // World-Y boundaries scaled to fit between bottom and fillLevel, so layers stay horizontal
+        // in world (gravity-aligned) and the visible band heights compress when the rim caps the fill.
+        float bottomWorldY = transform.position.y + interiorBottomLocalY;
+        float totalUnits = GetTotalUnits();
+        float visibleSpan = Mathf.Max(0.0001f, fillLevel - bottomWorldY);
+        float perUnit = totalUnits > 0.001f ? visibleSpan / totalUnits : 0f;
+
+        int layerCount = Mathf.Min(displayLayers.Count, MaxLayerSlots);
+
+        float runningUnits = 0f;
+        for (int i = 0; i < MaxLayerSlots; i++)
+        {
+            string boundaryProp = "_Boundary" + i;
+            if (i < layerCount)
+            {
+                liquidMaterial.SetFloat(boundaryProp, bottomWorldY + runningUnits * perUnit);
+                runningUnits += displayLayers[i].Units;
+            }
+            else
+            {
+                liquidMaterial.SetFloat(boundaryProp, bottomWorldY - 100f);
+            }
+        }
+    }
+
+    private void UpdateRendererVisibility()
+    {
+        bool empty = GetTotalUnits() <= 0.001f;
+        if (liquidRenderer != null && liquidRenderer.enabled == empty)
+        {
+            liquidRenderer.enabled = !empty;
+        }
+    }
+
+    private void BuildRenderer()
     {
         GameObject meshObject = new GameObject("LiquidColumn");
         meshObject.transform.SetParent(liquidRoot, false);
+        liquidColumnTransform = meshObject.transform;
         RuntimeViewUtility.SetLayerRecursively(meshObject, IgnoreRaycastLayer);
 
-        Mesh mesh = LiquidMeshFactory.BuildLiquidColumn(
+        MeshFilter filter = meshObject.AddComponent<MeshFilter>();
+        // Build the column once at the full glass interior height. The shader clips above fillLevel.
+        filter.sharedMesh = LiquidMeshFactory.BuildLiquidColumn(
             RadialSegments,
             VerticalSegments,
-            InteriorRadius,
-            InteriorBottomLocalY,
-            MeshTopLocalY);
-
-        MeshFilter filter = meshObject.AddComponent<MeshFilter>();
-        filter.sharedMesh = mesh;
+            interiorBottomRadius,
+            interiorTopRadius,
+            interiorBottomLocalY,
+            rimLocalY,
+            includeTopCap: false);
 
         liquidRenderer = meshObject.AddComponent<MeshRenderer>();
         liquidRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         liquidRenderer.receiveShadows = false;
         liquidMaterial = materials.CreateLiquidMaterialInstance();
         liquidRenderer.sharedMaterial = liquidMaterial;
+
+        BuildSurfaceMesh();
+    }
+
+    private void BuildSurfaceMesh()
+    {
+        surfaceObject = new GameObject("LiquidSurface_" + GetInstanceID());
+        surfaceTransform = surfaceObject.transform;
+        RuntimeViewUtility.SetLayerRecursively(surfaceObject, IgnoreRaycastLayer);
+
+        MeshFilter filter = surfaceObject.AddComponent<MeshFilter>();
+        filter.sharedMesh = LiquidMeshFactory.BuildLiquidSurface(RadialSegments);
+
+        surfaceRenderer = surfaceObject.AddComponent<MeshRenderer>();
+        surfaceRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        surfaceRenderer.receiveShadows = false;
+        surfaceRenderer.sharedMaterial = liquidMaterial;
+
+        surfaceObject.SetActive(false);
+    }
+
+    private void OnDestroy()
+    {
+        if (surfaceObject != null)
+        {
+            Object.Destroy(surfaceObject);
+            surfaceObject = null;
+        }
     }
 
     private void BuildDisplayLayers()
@@ -216,28 +385,24 @@ public sealed class GlassLiquidView : MonoBehaviour
         int layerCount = Mathf.Min(displayLayers.Count, MaxLayerSlots);
         liquidMaterial.SetFloat("_LayerCount", layerCount);
 
-        float currentBottomLocalY = InteriorBottomLocalY;
-        float baseWorldY = transform.position.y;
+        Color topColor = Color.white;
 
         for (int i = 0; i < MaxLayerSlots; i++)
         {
             string colorProp = "_Color" + i;
-            string boundaryProp = "_Boundary" + i;
-
             if (i < layerCount)
             {
-                DisplayLayer layer = displayLayers[i];
-                Color layerColor = materials.GetLiquidColor(layer.Color);
+                Color layerColor = materials.GetLiquidColor(displayLayers[i].Color);
                 liquidMaterial.SetColor(colorProp, layerColor);
-                liquidMaterial.SetFloat(boundaryProp, baseWorldY + currentBottomLocalY);
-                currentBottomLocalY += layer.Units * UnitHeight;
+                topColor = layerColor;
             }
             else
             {
                 liquidMaterial.SetColor(colorProp, Color.white);
-                liquidMaterial.SetFloat(boundaryProp, baseWorldY - 100f);
             }
         }
+
+        liquidMaterial.SetColor("_TopLayerColor", topColor);
     }
 
     private float GetTotalUnits()

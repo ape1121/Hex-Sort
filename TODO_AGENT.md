@@ -47,13 +47,69 @@
 ## Free-Drag Auto-Pour Pass
 
 - [x] Replace the drag-relative-to-rest-position scheme with free cursor positioning. The held glass mid-body simply tracks the cursor world XZ at a fixed hold height (no `MaxDragDistance` clamp).
-- [x] Replace tilt-driven pour with proximity-driven pour. `HexSortBoardController.FindNearestPourTarget` finds the closest pourable glass to the cursor (XZ); engagement is `1 - clamp((distance - min) / (max - min))`.
-- [x] `HexSortGlassController.UpdateHoldPose` now takes `(cursorWorld, target, engagement)` and rotates the glass towards the target by `engagement * MaxTiltAngle` (capped at 45°). The tilt is purely visual; pour activation is independent.
-- [x] Lift scales with engagement so the held glass rises when leaning towards a target, keeping the rim above the receiver rim.
-- [x] Wire engagement from `BoardController` -> `GlassController` -> `LiquidView` via `LiquidDynamicsSample.FlowReadiness`, replacing the old tilt-angle-based readiness so the surface lean matches whether the glass is currently pouring.
-- [x] Pour starts when engagement crosses `PourEngagementThreshold` (0.4) and continues unit-by-unit while the cursor stays close to the target. Pour rate scales with engagement.
+- [x] Replace tilt-driven pour with proximity-driven pour. `HexSortBoardController.ResolveEngagementTarget` finds the closest pourable glass to the cursor with hysteresis (enter at 1.05m, exit at 1.55m).
 - [x] Closed bottom disc added to the liquid mesh so looking down through a tilted glass shows a filled bottom instead of an open hole.
 - [x] Fill level clamp relaxed from "rim's lowest world-Y" (which dropped below the visible glass at heavy tilt) to "rim center world-Y - small margin", so liquid remains visible across the full tilt range.
+
+## DOTween Pour Animation Pass
+
+- [x] Add `GlassPourAnimator` MonoBehaviour that owns held-glass transform animation. State machine: `Idle -> FreeDragging -> Engaging -> Pouring -> Disengaging -> Returning`.
+- [x] Use `DG.Tweening` (DOTween, present at `Assets/Plugins/Demigiant/DOTween`) for all state transitions. Free-drag uses an exponential damp to follow the cursor; transitions use sequenced `DOMove` and `DORotateQuaternion`.
+- [x] `EngageTarget(target)` builds a `Sequence` that first appends a `DOMove` rise (height bump, no XZ change) and then appends a combined position+rotation tween into the pour pose. Pouring (`IsPouring`) is only set when the sequence completes.
+- [x] `DisengageTarget(cursor)` and `ReturnToRest(restPosition)` tween position and rotation back simultaneously. Old tweens are killed before new ones start so re-engagements are smooth.
+- [x] Pour pose computed from per-target `(target.position - toTargetDirection * pourMidLateralOffset + Vector3.up * pourMidHeight)` so the held glass lip ends up just over the target rim corner facing the source. Tilt direction = `Cross(world up, toTarget)` so the lip extends towards the receiver.
+- [x] All tween durations, eases, rise extra height, pour tilt angle, mid-body lateral offset, and pour mid height are `[SerializeField]` fields on `GlassPourAnimator` (tunable by editing the source defaults today; ready to expose via prefab when authoring assets land).
+- [x] `HexSortGlassController` is now a thin dispatcher: `BeginHold/DriveHold/EndHold` delegate to the animator, and the controller's `LateUpdate` only computes liquid-view dynamics (velocity, agitation) from the animator-driven transform.
+- [x] `HexSortBoardController.UpdateHeldGlass` resolves the engagement target each frame (with hysteresis), drives the animator, and only ticks the pour timer (`perUnitPourSeconds`, default 0.85s) and shows the stream while `heldGlass.AnimatorIsPouring` is true. This guarantees the visual is "rise into pour pose first, *then* the liquid flows".
+
+## Liquid Physics Feel Pass
+
+Goal: liquid should *feel like water under gravity*. Surface and layers should react to glass motion (slosh), settle with damped oscillation, and read clearly with caustic shimmer. Cap and layers tilt with the rigid mesh (already in place from the closed-mesh refactor); this pass adds reactive motion **on top of** that.
+
+### Industry-standard approach
+- **Slosh** is modelled as a 2D damped spring (mass on a horizontal plane). External force = `-acceleration` of the container. Spring pulls the offset back to centre; damper bleeds energy. The offset → tilt of the surface plane.
+- **Surface tilt** is applied at vertex stage: cap vertex Y is displaced by `dot(world_xz_offset_from_center, slosh_dir) * slosh_magnitude`. Far side of the slosh direction goes up, near side goes down. Same idea applies to layer boundaries inside the body.
+- **Brownian** noise stays as cap micro-detail; its amplitude scales with `agitation`.
+- **Caustics** are a procedural shimmer pattern (2-octave value noise) modulated by depth and time. Visible on side walls and surface; brighter when motion is high.
+- **Impulses** on grab/release/snap inject energy into the slosh state (one-shot velocity kick), so the liquid visibly reacts to player actions.
+
+### Plan
+
+- [x] Audit existing dynamics path. `LiquidDynamicsSample` only carries `agitation` (scalar) and `containerUp` (rotation). Need horizontal velocity / acceleration for slosh.
+- [x] Extend `LiquidDynamicsSample` with `LinearVelocity` (world XYZ) and `AngularSpeedDeg` (scalar) so the view can derive slosh forcing without re-sampling the transform.
+- [x] `HexSortGlassController.LateUpdate` now forwards linear velocity and angular speed.
+- [x] Slosh state added to `GlassLiquidView`: spring-damper integration in `LateUpdate`, `_SloshX`/`_SloshZ` plus `_GlassCenterX`/`_GlassCenterZ` shader uniforms, tunable via `sloshStiffness`/`sloshDamping`/`sloshSensitivity`/`sloshMaxAmplitude` SerializeFields.
+- [x] Shader vertex stage applies `sloshLift = dot(worldXZ - glassCenter, sloshXZ)` to top cap (full magnitude + brownian wobble) and side wall (30%), bottom cap untouched.
+- [x] Fragment stage looks up layer colour at `objectY - sloshLift`, so layer boundaries visibly slope with the slosh tilt.
+- [x] Wobble amplitude is now `lerp(0.012, 0.045, agitation + sloshMag*0.6)` — visibly chops with motion.
+- [x] Caustic shimmer strengthened: 3 noise octaves and a `_CausticStrength` uniform (default 0.35), 100% on cap and 40% on walls.
+- [x] Impulse hooks: `AddSloshImpulse` on `GlassLiquidView`, called from `HexSortGlassController.BeginHold` (0.45 × cursor direction) and `EndHold` (small randomised settle). DOTween snaps from `GlassPourAnimator` excite slosh naturally via the velocity estimator.
+- [ ] Bump cap radial segments from 24 → 32 if banding still visible after testing.
+- [x] `docs/liquid-system.md` updated with slosh model, shader behaviour, uniforms, and tuning fields.
+
+## Real-Liquid Implicit-Body Pass
+
+Goal: render the liquid as the *actual physical intersection* of the glass interior cylinder with a horizontal world plane at the fill level. Cap is geometrically correct at any tilt; layers stay gravity-aligned.
+
+- [x] Body cylinder built **once** at full glass interior height (`interiorBottomLocalY → rimLocalY`), no top cap. Parented to glass, tilts with the body. Fragments above `_FillLevel` (world Y) are discarded by the shader, so the visible body is automatically the "scoop" shape of liquid in a tilted cup.
+- [x] Surface disc is a top-level GameObject, scaled to `2.5 × maxRadius` so it always covers the largest possible elliptical cross-section. Each frame: positioned at `(glass.x, fillLevel, glass.z)` with identity rotation (gravity-horizontal).
+- [x] Shader **implicit-body cylinder test** clips the disc to the exact body interior cross-section. Surface fragments outside the cylinder are discarded — the visible disc is the *correct ellipse* at any tilt, taper, or scale.
+- [x] Layer colours via **world-Y boundaries** scaled to fit `[bottom, fillLevel]`. Layers stay horizontal in world (real-liquid behaviour) and compress smoothly when the rim caps the fill.
+- [x] Top-layer colour passed as `_TopLayerColor` uniform; surface uses it directly with caustic + foam treatment.
+- [x] Slosh tilt and brownian wobble continue to drive the surface vertex Y so the disc oscillates within the implicit cylinder.
+
+## Pour Pose & Surface Gravity Pass
+
+Goal: pour pose must read correctly (no body intersection between glasses, lip near target rim, visible stream); the cap must read as a real **gravity-aligned** surface during pour, not a cap that tilts with the body.
+
+- [x] `LiquidMeshFactory.BuildLiquidColumn` accepts `includeTopCap` (default `true`); column is now built **without** a top cap.
+- [x] `LiquidMeshFactory.BuildLiquidSurface` (re-added) builds a unit-radius flat disc with `uv.y = 1` everywhere.
+- [x] `GlassLiquidView` spawns a top-level `LiquidSurface_<id>` GameObject (no parent → immune to glass tilt).
+- [x] Disc is positioned each `LateUpdate` at `glass.TransformPoint(0, fillLocalTop, 0)` — the central-axis intersection with the body's top edge plane — and rotation is forced to identity, so the surface is always horizontal in world (gravity-aligned).
+- [x] Disc radius scaled by `liquidColumnTransform.lossyScale.x` to match parent scale, plus a 5% bias so it always covers the elliptical cross-section of a tilted cylinder.
+- [x] Slosh tilt (already in shader) applies to disc verts identically to the old top-cap path because the disc UVs all read `uv.y = 1`.
+- [x] `GlassPourAnimator.ComputePourPosition` is now a clean inverse-kinematic solve: `desiredLipWorld = target.position + up*target.RimLocalY - toTargetDir*(target.RimRadius + pourLipClearance)`, then `source.position = desiredLipWorld - pourRotation*(up*SourceRimLocalY + toTargetDir*SourceRimRadius)`. The source's tilted downhill rim point lands **exactly** on the target's source-facing rim edge (lip-touching). Body clearance was removed — it was over-conservative and caused a visible 0.18m offset between lip and target rim. Glass shells are transparent; the implicit-cylinder shader clips the liquid to its own body, so any small visual overlap of the shells is harmless.
+- [x] `PourStreamView.UpdateVisual` cull-out threshold lowered from 0.05 → 0.005 so the stream reliably renders even at short pour distances.
 
 ## Next High-Value Tasks
 

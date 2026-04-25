@@ -4,9 +4,16 @@ using UnityEngine.InputSystem;
 
 public sealed class HexSortBoardController : MonoBehaviour
 {
-    private const float PourEngagementMaxDistance = 1.85f;
-    private const float PourEngagementMinDistance = 0.55f;
-    private const float PourEngagementThreshold = 0.4f;
+    [Header("Engagement Detection")]
+    [SerializeField] private float engageEnterDistance = 1.05f;
+    [SerializeField] private float engageExitDistance = 1.55f;
+
+    [Header("Pour Timing")]
+    [SerializeField] private float perUnitPourSeconds = 0.85f;
+    [SerializeField] private float streamWarmupSeconds = 0.05f;
+    [Tooltip("If a pour is cancelled (release / target lost) past this fraction of a unit, the in-progress unit is committed instead of reverting.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float partialCommitThreshold = 0.5f;
 
     private readonly List<HexSortGlassController> glasses = new List<HexSortGlassController>();
 
@@ -18,6 +25,8 @@ public sealed class HexSortBoardController : MonoBehaviour
     private LiquidColorId[][] startingLayouts;
     private HexSortGlassController heldGlass;
     private HexSortGlassController candidateTarget;
+    private HexSortGlassController activeEngagedTarget;
+    private HexSortGlassController pourTarget;
     private float activePourProgress;
     private LiquidColorId activePourColor;
     private bool initialized;
@@ -91,13 +100,22 @@ public sealed class HexSortBoardController : MonoBehaviour
             return;
         }
 
+        if (!TryProjectPointerToDragPlane(inputManager.PrimaryScreenPosition, out Vector3 startWorldPoint))
+        {
+            return;
+        }
+
         if (!inputManager.TryCapturePrimary(this))
         {
             return;
         }
 
+        Vector3 startCursor = ClampToBoard(startWorldPoint);
+
         heldGlass = glass;
-        heldGlass.BeginHold();
+        heldGlass.BeginHold(startCursor);
+        activeEngagedTarget = null;
+        pourTarget = null;
         activePourProgress = 0f;
         activePourColor = LiquidColorId.None;
         RefreshHighlights(null);
@@ -118,52 +136,22 @@ public sealed class HexSortBoardController : MonoBehaviour
 
         Vector3 cursorWorld = ClampToBoard(worldPoint);
 
-        HexSortGlassController nearestPourable = FindNearestPourTarget(cursorWorld, out float engagement);
-        candidateTarget = nearestPourable;
+        HexSortGlassController desiredTarget = ResolveEngagementTarget(cursorWorld);
+        candidateTarget = desiredTarget;
 
-        heldGlass.UpdateHoldPose(cursorWorld, nearestPourable, engagement);
+        float engagementSignal = desiredTarget != null ? 1f : 0f;
+        heldGlass.DriveHold(cursorWorld, desiredTarget, engagementSignal);
         RefreshHighlights(candidateTarget);
 
-        if (candidateTarget == null || !heldGlass.TryCreateMoveTo(candidateTarget, 1, out PourMove move) || engagement < PourEngagementThreshold)
-        {
-            ClearPourPreview();
-            return;
-        }
-
-        if (activePourColor != move.Color)
-        {
-            activePourProgress = 0f;
-            activePourColor = move.Color;
-        }
-
-        float pourRate = Mathf.Lerp(0.6f, 2.4f, engagement);
-        activePourProgress += Time.deltaTime * pourRate;
-
-        heldGlass.SetTransferPreview(move.Color, -Mathf.Clamp01(activePourProgress));
-        candidateTarget.SetTransferPreview(move.Color, Mathf.Clamp01(activePourProgress));
-        heldGlass.SetPouringState(true);
-
-        GlassPourIntent intent = heldGlass.GetPourIntent();
-        Vector3 receivePoint = candidateTarget.GetReceivePoint(intent.PourOrigin);
-        pourStream.Show(intent.PourOrigin, receivePoint, GetLiquidColor(move.Color), engagement);
-
-        if (activePourProgress >= 1f)
-        {
-            heldGlass.ClearTransferPreview();
-            candidateTarget.ClearTransferPreview();
-            heldGlass.ApplyMoveTo(candidateTarget, move);
-            activePourProgress = 0f;
-            activePourColor = LiquidColorId.None;
-        }
+        TickPourFlow(desiredTarget);
     }
 
-    private HexSortGlassController FindNearestPourTarget(Vector3 cursorWorld, out float engagement)
+    private HexSortGlassController ResolveEngagementTarget(Vector3 cursorWorld)
     {
-        engagement = 0f;
-        HexSortGlassController bestTarget = null;
-        float bestDistance = float.PositiveInfinity;
-
         Vector2 cursorXZ = new Vector2(cursorWorld.x, cursorWorld.z);
+
+        HexSortGlassController nearest = null;
+        float nearestDistance = float.PositiveInfinity;
 
         for (int i = 0; i < glasses.Count; i++)
         {
@@ -174,27 +162,96 @@ public sealed class HexSortBoardController : MonoBehaviour
             }
 
             Vector3 candidatePos = candidate.transform.position;
-            Vector2 candidateXZ = new Vector2(candidatePos.x, candidatePos.z);
-            float distance = Vector2.Distance(cursorXZ, candidateXZ);
+            float distance = Vector2.Distance(cursorXZ, new Vector2(candidatePos.x, candidatePos.z));
 
-            if (distance < bestDistance)
+            if (distance < nearestDistance)
             {
-                bestDistance = distance;
-                bestTarget = candidate;
+                nearestDistance = distance;
+                nearest = candidate;
             }
         }
 
-        if (bestTarget == null || bestDistance >= PourEngagementMaxDistance)
+        if (nearest == null)
         {
+            activeEngagedTarget = null;
             return null;
         }
 
-        engagement = Mathf.InverseLerp(PourEngagementMaxDistance, PourEngagementMinDistance, bestDistance);
-        return bestTarget;
+        if (activeEngagedTarget == nearest)
+        {
+            if (nearestDistance <= engageExitDistance)
+            {
+                return nearest;
+            }
+
+            activeEngagedTarget = null;
+            return null;
+        }
+
+        if (nearestDistance <= engageEnterDistance)
+        {
+            activeEngagedTarget = nearest;
+            return nearest;
+        }
+
+        activeEngagedTarget = null;
+        return null;
+    }
+
+    private void TickPourFlow(HexSortGlassController target)
+    {
+        if (target == null || !heldGlass.AnimatorIsPouring)
+        {
+            CommitPartialPourIfNeeded();
+            ClearPourPreview();
+            return;
+        }
+
+        if (!heldGlass.TryCreateMoveTo(target, 1, out PourMove move))
+        {
+            CommitPartialPourIfNeeded();
+            ClearPourPreview();
+            return;
+        }
+
+        if (activePourColor != move.Color || pourTarget != target)
+        {
+            activePourProgress = 0f;
+            activePourColor = move.Color;
+        }
+
+        pourTarget = target;
+
+        float pourRate = 1f / Mathf.Max(0.05f, perUnitPourSeconds);
+        activePourProgress = Mathf.Min(1f, activePourProgress + (Time.deltaTime * pourRate));
+
+        heldGlass.SetTransferPreview(move.Color, -activePourProgress);
+        target.SetTransferPreview(move.Color, activePourProgress);
+        heldGlass.SetPouringState(true);
+
+        if (activePourProgress >= streamWarmupSeconds * pourRate)
+        {
+            GlassPourIntent intent = heldGlass.GetPourIntent();
+            Vector3 receivePoint = target.GetReceivePoint(intent.PourOrigin);
+            float streamIntensity = Mathf.Clamp01(activePourProgress * 1.5f);
+            pourStream.Show(intent.PourOrigin, receivePoint, GetLiquidColor(move.Color), streamIntensity);
+        }
+
+        if (activePourProgress >= 1f)
+        {
+            heldGlass.ClearTransferPreview();
+            target.ClearTransferPreview();
+            heldGlass.ApplyMoveTo(target, move);
+            activePourProgress = 0f;
+            activePourColor = LiquidColorId.None;
+            pourTarget = null;
+        }
     }
 
     private void ReleaseHeldGlass()
     {
+        CommitPartialPourIfNeeded();
+
         if (heldGlass != null)
         {
             heldGlass.EndHold();
@@ -204,6 +261,7 @@ public sealed class HexSortBoardController : MonoBehaviour
         inputManager.ReleasePrimary(this);
         heldGlass = null;
         candidateTarget = null;
+        activeEngagedTarget = null;
         ClearPourPreview();
         RefreshHighlights(null);
     }
@@ -223,7 +281,38 @@ public sealed class HexSortBoardController : MonoBehaviour
 
         activePourProgress = 0f;
         activePourColor = LiquidColorId.None;
+        pourTarget = null;
         pourStream.Hide();
+    }
+
+    private void CommitPartialPourIfNeeded()
+    {
+        if (heldGlass == null || pourTarget == null)
+        {
+            return;
+        }
+
+        if (activePourProgress < partialCommitThreshold)
+        {
+            return;
+        }
+
+        if (!heldGlass.TryCreateMoveTo(pourTarget, 1, out PourMove move))
+        {
+            return;
+        }
+
+        if (move.Color != activePourColor)
+        {
+            return;
+        }
+
+        heldGlass.ClearTransferPreview();
+        pourTarget.ClearTransferPreview();
+        heldGlass.ApplyMoveTo(pourTarget, move);
+        activePourProgress = 0f;
+        activePourColor = LiquidColorId.None;
+        pourTarget = null;
     }
 
     private void ResetBoard()
@@ -232,6 +321,7 @@ public sealed class HexSortBoardController : MonoBehaviour
         inputManager.ReleasePrimary(this);
         heldGlass = null;
         candidateTarget = null;
+        activeEngagedTarget = null;
 
         for (int i = 0; i < glasses.Count; i++)
         {

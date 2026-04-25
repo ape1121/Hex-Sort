@@ -17,22 +17,30 @@ Shader "HexSort/Liquid"
         _Boundary5("Layer 5 Bottom (World Y)", Float) = 0
 
         _LayerCount("Layer Count", Float) = 0
+        _TopLayerColor("Top Layer Color", Color) = (1, 1, 1, 1)
         _FillLevel("Fill Level (World Y)", Float) = 0
-        _BottomLevel("Bottom Level (World Y)", Float) = -10
+
+        _GlassCenter("Glass Centre (World)", Vector) = (0, 0, 0, 0)
+        _GlassUp("Glass Up (World)", Vector) = (0, 1, 0, 0)
+        _BodyBottomLocalY("Body Bottom Local Y", Float) = 0
+        _BodyTopLocalY("Body Top Local Y", Float) = 1
+        _BodyBottomRadius("Body Bottom Radius", Float) = 0.42
+        _BodyTopRadius("Body Top Radius", Float) = 0.42
 
         _FoamColor("Foam Color", Color) = (1, 1, 1, 1)
-        _FoamThickness("Foam Thickness", Float) = 0.06
-        _FoamStrength("Foam Strength", Range(0, 1)) = 0.55
+        _FoamStrength("Foam Strength", Range(0, 1)) = 0.10
         _DepthTint("Depth Tint", Range(0, 1)) = 0.18
 
         _WobbleAmount("Wobble Amount", Float) = 0.018
         _WobbleSpeed("Wobble Speed", Float) = 1.6
         _WobbleSeed("Wobble Seed", Float) = 0
 
-        _LeanX("Surface Lean X (per meter)", Float) = 0
-        _LeanZ("Surface Lean Z (per meter)", Float) = 0
-        _LeanCenterX("Lean Center X", Float) = 0
-        _LeanCenterZ("Lean Center Z", Float) = 0
+        _SloshX("Slosh X (per metre)", Float) = 0
+        _SloshZ("Slosh Z (per metre)", Float) = 0
+        _GlassCenterX("Glass Centre X (legacy)", Float) = 0
+        _GlassCenterZ("Glass Centre Z (legacy)", Float) = 0
+
+        _CausticStrength("Caustic Strength", Range(0, 1)) = 0.35
     }
 
     SubShader
@@ -76,19 +84,25 @@ Shader "HexSort/Liquid"
                 float _Boundary4;
                 float _Boundary5;
                 float _LayerCount;
+                float4 _TopLayerColor;
                 float _FillLevel;
-                float _BottomLevel;
+                float4 _GlassCenter;
+                float4 _GlassUp;
+                float _BodyBottomLocalY;
+                float _BodyTopLocalY;
+                float _BodyBottomRadius;
+                float _BodyTopRadius;
                 float4 _FoamColor;
-                float _FoamThickness;
                 float _FoamStrength;
                 float _DepthTint;
                 float _WobbleAmount;
                 float _WobbleSpeed;
                 float _WobbleSeed;
-                float _LeanX;
-                float _LeanZ;
-                float _LeanCenterX;
-                float _LeanCenterZ;
+                float _SloshX;
+                float _SloshZ;
+                float _GlassCenterX;
+                float _GlassCenterZ;
+                float _CausticStrength;
             CBUFFER_END
 
             struct Attributes
@@ -105,22 +119,69 @@ Shader "HexSort/Liquid"
                 float3 worldNormal : TEXCOORD1;
                 float2 uv : TEXCOORD2;
                 float fogCoord : TEXCOORD3;
-                float wobbledFillLevel : TEXCOORD4;
             };
 
-            float ComputeWobbledFillLevel(float3 worldPos)
+            float Hash21(float2 p)
+            {
+                p = frac(p * float2(123.34, 456.21));
+                p += dot(p, p + 78.233);
+                return frac(p.x * p.y);
+            }
+
+            float ValueNoise2D(float2 p)
+            {
+                float2 i = floor(p);
+                float2 f = frac(p);
+                float a = Hash21(i);
+                float b = Hash21(i + float2(1, 0));
+                float c = Hash21(i + float2(0, 1));
+                float d = Hash21(i + float2(1, 1));
+                float2 u = f * f * (3.0 - 2.0 * f);
+                return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y) * 2.0 - 1.0;
+            }
+
+            float ComputeBrownianWobble(float3 worldPos)
             {
                 float t = _Time.y * _WobbleSpeed;
-                float w1 = sin(t + (worldPos.x * 4.2) + _WobbleSeed) * 0.55;
-                float w2 = sin((t * 1.37) + (worldPos.z * 5.6) + (_WobbleSeed * 1.7)) * 0.45;
-                float w3 = cos((t * 2.11) + ((worldPos.x + worldPos.z) * 3.1) + (_WobbleSeed * 2.3)) * 0.30;
-                float wobble = (w1 + w2 + w3) * _WobbleAmount;
+                float n1 = ValueNoise2D(worldPos.xz * 1.7 + float2(t, t * 0.71) + _WobbleSeed);
+                float n2 = ValueNoise2D(worldPos.xz * 4.3 + float2(-t * 0.83, t * 1.21) + _WobbleSeed * 1.5);
+                float n3 = sin(t * 2.4 + (worldPos.x + worldPos.z) * 3.1 + _WobbleSeed * 2.3) * 0.4;
+                return (n1 * 0.6 + n2 * 0.3 + n3 * 0.2) * _WobbleAmount;
+            }
 
-                float lean =
-                    (_LeanX * (worldPos.x - _LeanCenterX)) +
-                    (_LeanZ * (worldPos.z - _LeanCenterZ));
+            float ComputeCausticShimmer(float3 worldPos)
+            {
+                float t = _Time.y;
+                float a = ValueNoise2D(worldPos.xz * 5.3 + float2(t * 0.9, -t * 0.6));
+                float b = ValueNoise2D(worldPos.xz * 9.7 + float2(-t * 1.1, t * 0.7));
+                float c = ValueNoise2D(worldPos.xz * 2.1 + float2(t * 0.4, t * 0.5));
+                float caustic = saturate(a * 0.45 + b * 0.35 + c * 0.30 + 0.30);
+                return caustic * caustic;
+            }
 
-                return _FillLevel + wobble + lean;
+            float ComputeSloshLift(float3 worldPos)
+            {
+                float2 fromCentre = worldPos.xz - _GlassCenter.xz;
+                return fromCentre.x * _SloshX + fromCentre.y * _SloshZ;
+            }
+
+            // Returns true if `worldPos` is inside the implicit body cylinder (used to clip the
+            // surface disc to the glass interior cross-section regardless of tilt or taper).
+            bool IsInsideBodyCylinder(float3 worldPos)
+            {
+                float3 axisDir = normalize(_GlassUp.xyz);
+                float3 toFrag = worldPos - _GlassCenter.xyz;
+                float t = dot(toFrag, axisDir);
+                float3 perp = toFrag - t * axisDir;
+                float distFromAxis = length(perp);
+
+                float span = max(0.0001, _BodyTopLocalY - _BodyBottomLocalY);
+                float fillT = saturate((t - _BodyBottomLocalY) / span);
+                float bodyRadius = lerp(_BodyBottomRadius, _BodyTopRadius, fillT);
+
+                return distFromAxis <= bodyRadius
+                    && t >= _BodyBottomLocalY - 0.02
+                    && t <= _BodyTopLocalY + 0.02;
             }
 
             float3 GetLayerColor(float worldY)
@@ -138,28 +199,15 @@ Shader "HexSort/Liquid"
             {
                 Varyings OUT = (Varyings)0;
 
-                float3 worldPos;
-                float3 worldNormal;
+                float3 worldPos = TransformObjectToWorld(IN.positionOS.xyz);
+                float3 worldNormal = TransformObjectToWorldNormal(IN.normalOS);
 
                 if (IN.uv.y > 0.99)
                 {
-                    float3 glassCenterWS = mul(unity_ObjectToWorld, float4(0, 0, 0, 1)).xyz;
-                    float discRadius = sqrt((IN.positionOS.x * IN.positionOS.x) + (IN.positionOS.z * IN.positionOS.z));
-                    float discAngle = atan2(IN.positionOS.z, IN.positionOS.x);
-
-                    float fl = ComputeWobbledFillLevel(float3(glassCenterWS.x, 0, glassCenterWS.z));
-
-                    worldPos = float3(
-                        glassCenterWS.x + (cos(discAngle) * discRadius),
-                        fl,
-                        glassCenterWS.z + (sin(discAngle) * discRadius));
-
+                    // Surface disc: brownian wobble + slosh tilt.
+                    float sloshLift = ComputeSloshLift(worldPos);
+                    worldPos.y += sloshLift + ComputeBrownianWobble(worldPos);
                     worldNormal = float3(0, 1, 0);
-                }
-                else
-                {
-                    worldPos = TransformObjectToWorld(IN.positionOS.xyz);
-                    worldNormal = TransformObjectToWorldNormal(IN.normalOS);
                 }
 
                 OUT.positionHCS = TransformWorldToHClip(worldPos);
@@ -167,42 +215,54 @@ Shader "HexSort/Liquid"
                 OUT.worldNormal = worldNormal;
                 OUT.uv = IN.uv;
                 OUT.fogCoord = ComputeFogFactor(OUT.positionHCS.z);
-                OUT.wobbledFillLevel = ComputeWobbledFillLevel(worldPos);
                 return OUT;
             }
 
             half4 Frag(Varyings IN) : SV_Target
             {
-                float fl = IN.wobbledFillLevel;
-
-                float aboveSurface = IN.worldPos.y - fl;
-                if ((IN.uv.y < 0.99) && (aboveSurface > 0.001))
-                {
-                    discard;
-                }
-
-                if (IN.worldPos.y < _BottomLevel - 0.05)
-                {
-                    discard;
-                }
-
-                float colorLookupY = (IN.uv.y > 0.99) ? (fl - 0.0005) : IN.worldPos.y;
-                float3 baseColor = GetLayerColor(colorLookupY);
-
-                float depthBelow = max(0, fl - IN.worldPos.y);
-                float depthFactor = saturate(depthBelow / 0.85);
-                baseColor *= lerp(1.05, 1.0 - _DepthTint, depthFactor);
-
-                float distToSurface = abs(fl - IN.worldPos.y);
-                float foamMask = saturate(1.0 - (distToSurface / max(0.001, _FoamThickness)));
-                foamMask = pow(foamMask, 1.7);
-                baseColor = lerp(baseColor, _FoamColor.rgb, foamMask * _FoamStrength);
+                float3 baseColor;
 
                 if (IN.uv.y > 0.99)
                 {
-                    float3 capColor = lerp(baseColor, _FoamColor.rgb, 0.18);
-                    capColor *= 1.04;
-                    baseColor = capColor;
+                    // Surface fragment: clip to actual body cross-section so the disc reads as the
+                    // exact intersection of the horizontal fill plane with the (possibly tilted) cylinder.
+                    if (!IsInsideBodyCylinder(IN.worldPos))
+                    {
+                        discard;
+                    }
+
+                    baseColor = _TopLayerColor.rgb;
+                    float caustic = ComputeCausticShimmer(IN.worldPos);
+                    baseColor += caustic * _CausticStrength * _FoamColor.rgb;
+                    baseColor = lerp(baseColor, _FoamColor.rgb, _FoamStrength * 0.5);
+                    baseColor *= 1.04;
+                }
+                else
+                {
+                    // Body fragment: discard above the world horizontal fill plane so the
+                    // visible body is exactly the liquid volume (the "scoop" shape under tilt).
+                    if (IN.worldPos.y > _FillLevel + 0.001)
+                    {
+                        discard;
+                    }
+
+                    if (IN.uv.y < 0.01)
+                    {
+                        // Bottom cap.
+                        baseColor = _Color0.rgb * 0.92;
+                    }
+                    else
+                    {
+                        // Side wall: layer colour by WORLD Y so layers stay horizontal under tilt.
+                        baseColor = GetLayerColor(IN.worldPos.y);
+
+                        float depthFromTop = max(0, _FillLevel - IN.worldPos.y);
+                        float depthFactor = saturate(depthFromTop / 0.85);
+                        baseColor *= lerp(1.05, 1.0 - _DepthTint, depthFactor);
+
+                        float caustic = ComputeCausticShimmer(IN.worldPos);
+                        baseColor += caustic * _CausticStrength * 0.4 * _FoamColor.rgb;
+                    }
                 }
 
                 Light mainLight = GetMainLight();
@@ -219,6 +279,5 @@ Shader "HexSort/Liquid"
             }
             ENDHLSL
         }
-
     }
 }

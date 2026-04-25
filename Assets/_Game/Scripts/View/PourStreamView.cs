@@ -112,7 +112,7 @@ public sealed class PourStreamView : MonoBehaviour
         float horizontalDistance = horizontalDelta.magnitude;
         float verticalDistance = Mathf.Abs(toPoint.y - fromPoint.y);
         float totalDistance = Mathf.Sqrt((horizontalDistance * horizontalDistance) + (verticalDistance * verticalDistance));
-        if (totalDistance < 0.05f)
+        if (totalDistance < 0.005f)
         {
             Hide();
             return;

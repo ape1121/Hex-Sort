@@ -2,60 +2,104 @@ using UnityEngine;
 
 public sealed class HexSortGlassController : MonoBehaviour
 {
-    private const float RimHeight = 2.18f;
-    private const float RimRadius = 0.34f;
-    private const float MaxTiltAngle = 45f;
-    private const float MidGlassHeight = 1.18f;
-    private const float HoldHeight = 2.2f;
-    private const float MaxTiltLift = 0.9f;
+    [Header("Anchors")]
+    [Tooltip("Where the procedural liquid column is parented. Leave null to auto-create a child named 'Liquid'.")]
+    [SerializeField] private Transform liquidAnchor;
+    [Tooltip("Optional renderer used for the selection highlight tint. Leave null to disable highlighting.")]
+    [SerializeField] private Renderer highlightRenderer;
+
+    [Header("Interior Geometry (glass-local units)")]
+    [Tooltip("Local Y of the interior floor — where the liquid sits.")]
+    [SerializeField] private float interiorBottomLocalY = 0.18f;
+    [Tooltip("Vertical height each colour unit occupies inside the glass.")]
+    [SerializeField] private float unitHeight = 0.44f;
+    [Tooltip("Inner radius at the cavity floor (interiorBottomLocalY). Lower this for tapered glasses.")]
+    [SerializeField] private float interiorBottomRadius = 0.42f;
+    [Tooltip("Inner radius at the top of the procedural liquid column (meshTopLocalY). Make larger than the bottom for a flared glass.")]
+    [SerializeField] private float interiorTopRadius = 0.42f;
+    [Tooltip("Top of the procedural liquid mesh in glass-local space. Set well above the rim so leaning never clips.")]
+    [SerializeField] private float meshTopLocalY = 4.5f;
+    [Tooltip("Local Y of the rim (the pour edge).")]
+    [SerializeField] private float rimLocalY = 2.18f;
+    [Tooltip("Horizontal distance from the glass centre to the rim edge — used to position pour streams.")]
+    [SerializeField] private float rimRadius = 0.34f;
 
     private GlassLiquidView liquidView;
-    private Renderer highlightRenderer;
+    private GlassPourAnimator pourAnimator;
     private GlassState state;
     private Vector3 restPosition;
-    private Quaternion restRotation;
-    private Vector3 desiredPosition;
-    private Quaternion desiredRotation;
     private Vector3 previousPosition;
     private Quaternion previousRotation;
+    private HexSortGlassController currentEngagedTarget;
     private float currentEngagement;
     private bool isHeld;
     private bool isPouring;
+    private bool isInitialized;
 
     public int Index { get; private set; }
 
     public GlassState State => state;
 
+    public bool AnimatorIsPouring => pourAnimator != null && pourAnimator.IsPouring;
+
+    public bool AnimatorIsTransitioning => pourAnimator != null && pourAnimator.IsTransitioning;
+
+    public HexSortGlassController EngagedTarget => currentEngagedTarget;
+
+    public bool IsInitialized => isInitialized;
+
+    public float InteriorBottomLocalY => interiorBottomLocalY;
+    public float RimLocalY => rimLocalY;
+    public float RimRadius => rimRadius;
+    public float BodyMidLocalY => (interiorBottomLocalY + rimLocalY) * 0.5f;
+
     public void Initialize(int index, int capacity, HexSortMaterialLibrary materials)
     {
+        if (isInitialized)
+        {
+            return;
+        }
+
         Index = index;
         state = new GlassState(capacity);
 
-        GlassVisualReferences visuals = GlassVisualBuilder.Build(transform, materials);
-        highlightRenderer = visuals.HighlightRenderer;
+        if (interiorBottomRadius < 0.01f) interiorBottomRadius = 0.42f;
+        if (interiorTopRadius < 0.01f) interiorTopRadius = 0.42f;
+        if (unitHeight < 0.01f) unitHeight = 0.44f;
+        if (meshTopLocalY < rimLocalY + 0.1f) meshTopLocalY = rimLocalY + 2.0f;
 
-        liquidView = gameObject.AddComponent<GlassLiquidView>();
-        liquidView.Initialize(visuals.LiquidRoot, state, materials, capacity);
-
-        CapsuleCollider collider = gameObject.GetComponent<CapsuleCollider>();
-        if (collider == null)
+        Transform liquidRoot = liquidAnchor;
+        if (liquidRoot == null)
         {
-            collider = gameObject.AddComponent<CapsuleCollider>();
+            liquidRoot = new GameObject("Liquid").transform;
+            liquidRoot.SetParent(transform, false);
         }
 
-        collider.center = new Vector3(0f, 1.28f, 0f);
-        collider.radius = 0.52f;
-        collider.height = 2.85f;
+        if (highlightRenderer != null && highlightRenderer.sharedMaterial != null)
+        {
+            highlightRenderer.sharedMaterial = materials.CreateHighlightMaterialInstance();
+        }
+
+        liquidView = gameObject.AddComponent<GlassLiquidView>();
+        liquidView.Initialize(liquidRoot, state, materials, capacity, interiorBottomLocalY, unitHeight, interiorBottomRadius, interiorTopRadius, meshTopLocalY, rimLocalY);
+
+        pourAnimator = gameObject.AddComponent<GlassPourAnimator>();
+
+        if (gameObject.GetComponent<Collider>() == null)
+        {
+            CapsuleCollider capsule = gameObject.AddComponent<CapsuleCollider>();
+            capsule.center = new Vector3(0f, 1.28f, 0f);
+            capsule.radius = 0.52f;
+            capsule.height = 2.85f;
+        }
 
         restPosition = transform.position;
-        restRotation = Quaternion.identity;
-        desiredPosition = transform.position;
-        desiredRotation = restRotation;
         previousPosition = transform.position;
         previousRotation = transform.rotation;
 
         SetHighlight(GlassHighlightMode.None);
         liquidView.RefreshGeometry();
+        isInitialized = true;
     }
 
     public void SetUnits(LiquidColorId[] units)
@@ -65,47 +109,48 @@ public sealed class HexSortGlassController : MonoBehaviour
         liquidView.RefreshGeometry();
     }
 
-    public void BeginHold()
+    public void BeginHold(Vector3 cursorWorld)
     {
         isHeld = true;
         isPouring = false;
         currentEngagement = 0f;
+        currentEngagedTarget = null;
         restPosition = transform.position;
-        restRotation = Quaternion.identity;
-    }
+        pourAnimator.BeginHold(cursorWorld);
 
-    public void UpdateHoldPose(Vector3 cursorWorld, HexSortGlassController target, float engagement)
-    {
-        engagement = Mathf.Clamp01(engagement);
-        currentEngagement = engagement;
-
-        Quaternion rotation = Quaternion.identity;
-        if (target != null && engagement > 0.001f)
+        if (liquidView != null)
         {
-            Vector3 toTarget = target.transform.position - cursorWorld;
-            toTarget.y = 0f;
-            if (toTarget.sqrMagnitude > 0.0001f)
+            Vector3 toCursor = cursorWorld - transform.position;
+            toCursor.y = 0f;
+            if (toCursor.sqrMagnitude > 0.0001f)
             {
-                Vector3 toTargetDirection = toTarget.normalized;
-                Vector3 tiltAxis = Vector3.Cross(Vector3.up, toTargetDirection);
-                if (tiltAxis.sqrMagnitude > 0.0001f)
-                {
-                    tiltAxis.Normalize();
-                    float smoothEngagement = engagement * engagement * (3f - (2f * engagement));
-                    float tiltAngle = smoothEngagement * MaxTiltAngle;
-                    rotation = Quaternion.AngleAxis(tiltAngle, tiltAxis);
-                }
+                liquidView.AddSloshImpulse(toCursor.normalized * 0.45f);
             }
         }
+    }
 
-        float tiltLift = engagement * MaxTiltLift;
-        Vector3 holdCenterWorld = new Vector3(
-            cursorWorld.x,
-            HoldHeight + tiltLift,
-            cursorWorld.z);
+    public void DriveHold(Vector3 cursorWorld, HexSortGlassController target, float engagement)
+    {
+        currentEngagement = Mathf.Clamp01(engagement);
 
-        desiredPosition = holdCenterWorld - (rotation * (Vector3.up * MidGlassHeight));
-        desiredRotation = rotation;
+        if (target != null)
+        {
+            if (currentEngagedTarget != target)
+            {
+                pourAnimator.EngageTarget(target);
+                currentEngagedTarget = target;
+            }
+            return;
+        }
+
+        if (currentEngagedTarget != null)
+        {
+            pourAnimator.DisengageTarget(cursorWorld);
+            currentEngagedTarget = null;
+            return;
+        }
+
+        pourAnimator.UpdateCursor(cursorWorld);
     }
 
     public void EndHold()
@@ -113,9 +158,10 @@ public sealed class HexSortGlassController : MonoBehaviour
         isHeld = false;
         isPouring = false;
         currentEngagement = 0f;
-        desiredPosition = restPosition;
-        desiredRotation = restRotation;
+        currentEngagedTarget = null;
         liquidView.ClearPreview();
+        liquidView.AddSloshImpulse(new Vector3(Random.Range(-0.25f, 0.25f), 0f, Random.Range(-0.25f, 0.25f)));
+        pourAnimator.ReturnToRest(restPosition);
     }
 
     public void SetHighlight(GlassHighlightMode mode)
@@ -183,7 +229,7 @@ public sealed class HexSortGlassController : MonoBehaviour
         }
 
         toSource.Normalize();
-        return transform.position + (Vector3.up * RimHeight) + (toSource * RimRadius * 0.55f);
+        return transform.position + (Vector3.up * rimLocalY) + (toSource * rimRadius * 0.55f);
     }
 
     public GlassPourIntent GetPourIntent()
@@ -209,7 +255,7 @@ public sealed class HexSortGlassController : MonoBehaviour
             horizontalLean = Vector3.zero;
         }
 
-        Vector3 pourOrigin = transform.position + (openingNormal * RimHeight) + (rimDownhill * RimRadius);
+        Vector3 pourOrigin = transform.position + (openingNormal * rimLocalY) + (rimDownhill * rimRadius);
 
         return new GlassPourIntent(pourOrigin, rimDownhill, horizontalLean, openingNormal, currentEngagement, tiltAngle);
     }
@@ -219,6 +265,15 @@ public sealed class HexSortGlassController : MonoBehaviour
         isPouring = value;
     }
 
+    private void OnValidate()
+    {
+        if (interiorBottomRadius < 0.01f) interiorBottomRadius = 0.01f;
+        if (interiorTopRadius < 0.01f) interiorTopRadius = 0.01f;
+        if (unitHeight < 0.01f) unitHeight = 0.01f;
+        if (meshTopLocalY < rimLocalY + 0.1f) meshTopLocalY = rimLocalY + 0.1f;
+        if (meshTopLocalY < interiorBottomLocalY + 0.1f) meshTopLocalY = interiorBottomLocalY + 0.1f;
+    }
+
     private void LateUpdate()
     {
         float deltaTime = Time.deltaTime;
@@ -226,11 +281,6 @@ public sealed class HexSortGlassController : MonoBehaviour
         {
             return;
         }
-
-        float positionLerp = 1f - Mathf.Exp(-12f * deltaTime);
-        float rotationLerp = 1f - Mathf.Exp(-14f * deltaTime);
-        transform.position = Vector3.Lerp(transform.position, desiredPosition, positionLerp);
-        transform.rotation = Quaternion.Slerp(transform.rotation, desiredRotation, rotationLerp);
 
         Vector3 linearVelocity = (transform.position - previousPosition) / deltaTime;
         Quaternion deltaRotation = transform.rotation * Quaternion.Inverse(previousRotation);
@@ -243,9 +293,120 @@ public sealed class HexSortGlassController : MonoBehaviour
         float angularVelocity = Mathf.Abs(angle) / deltaTime;
         GlassPourIntent intent = GetPourIntent();
         float agitation = Mathf.Clamp01((linearVelocity.magnitude * 0.11f) + (angularVelocity * 0.012f));
-        liquidView.SetDynamics(new LiquidDynamicsSample(transform.up, intent.DownhillDirection, intent.FlowReadiness, agitation, isHeld, isPouring));
+
+        if (liquidView == null || !isInitialized)
+        {
+            previousPosition = transform.position;
+            previousRotation = transform.rotation;
+            return;
+        }
+
+        liquidView.SetDynamics(new LiquidDynamicsSample(
+            transform.up,
+            intent.DownhillDirection,
+            linearVelocity,
+            angularVelocity,
+            intent.FlowReadiness,
+            agitation,
+            isHeld,
+            isPouring));
 
         previousPosition = transform.position;
         previousRotation = transform.rotation;
     }
+
+#if UNITY_EDITOR
+    [Header("Gizmos")]
+    [SerializeField] private bool drawGizmos = true;
+    [SerializeField] private int gizmoCapacity = 4;
+    [SerializeField] private int gizmoCircleSegments = 32;
+
+    private void OnDrawGizmosSelected()
+    {
+        if (!drawGizmos)
+        {
+            return;
+        }
+
+        Matrix4x4 previousMatrix = Gizmos.matrix;
+        Gizmos.matrix = transform.localToWorldMatrix;
+
+        Color cavityColor = new Color(0.34f, 0.74f, 1f, 0.85f);
+        Color unitColor = new Color(0.34f, 0.94f, 0.62f, 0.55f);
+        Color rimColor = new Color(0.99f, 0.67f, 0.32f, 0.95f);
+        Color meshTopColor = new Color(1f, 1f, 1f, 0.45f);
+        Color pourColor = new Color(0.97f, 0.50f, 0.71f, 0.95f);
+
+        Gizmos.color = cavityColor;
+        DrawGizmoCircle(interiorBottomLocalY, RadiusAt(interiorBottomLocalY));
+        DrawGizmoTaperVerticals(interiorBottomLocalY, rimLocalY, 8);
+
+        Gizmos.color = unitColor;
+        int slices = Mathf.Max(0, gizmoCapacity);
+        for (int i = 1; i <= slices; i++)
+        {
+            float y = interiorBottomLocalY + (i * unitHeight);
+            if (y > rimLocalY + 0.001f)
+            {
+                break;
+            }
+            DrawGizmoCircle(y, RadiusAt(y));
+        }
+
+        Gizmos.color = rimColor;
+        DrawGizmoCircle(rimLocalY, RadiusAt(rimLocalY));
+        DrawGizmoCircle(rimLocalY, rimRadius);
+
+        Gizmos.color = meshTopColor;
+        DrawGizmoCircle(meshTopLocalY, RadiusAt(meshTopLocalY));
+        DrawGizmoTaperVerticals(rimLocalY, meshTopLocalY, 4);
+
+        Gizmos.color = pourColor;
+        Vector3 pourOriginLocal = new Vector3(rimRadius, rimLocalY, 0f);
+        Gizmos.DrawSphere(pourOriginLocal, 0.04f);
+
+        Gizmos.matrix = previousMatrix;
+    }
+
+    private void DrawGizmoCircle(float localY, float radius)
+    {
+        int segments = Mathf.Max(8, gizmoCircleSegments);
+        Vector3 previous = new Vector3(radius, localY, 0f);
+        for (int i = 1; i <= segments; i++)
+        {
+            float angle = (Mathf.PI * 2f * i) / segments;
+            Vector3 next = new Vector3(Mathf.Cos(angle) * radius, localY, Mathf.Sin(angle) * radius);
+            Gizmos.DrawLine(previous, next);
+            previous = next;
+        }
+    }
+
+    private void DrawGizmoTaperVerticals(float fromLocalY, float toLocalY, int spokes)
+    {
+        int count = Mathf.Max(2, spokes);
+        float fromRadius = RadiusAt(fromLocalY);
+        float toRadius = RadiusAt(toLocalY);
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (Mathf.PI * 2f * i) / count;
+            float cosA = Mathf.Cos(angle);
+            float sinA = Mathf.Sin(angle);
+            Vector3 bottom = new Vector3(cosA * fromRadius, fromLocalY, sinA * fromRadius);
+            Vector3 top = new Vector3(cosA * toRadius, toLocalY, sinA * toRadius);
+            Gizmos.DrawLine(bottom, top);
+        }
+    }
+
+    private float RadiusAt(float localY)
+    {
+        float span = meshTopLocalY - interiorBottomLocalY;
+        if (Mathf.Abs(span) < 0.0001f)
+        {
+            return interiorBottomRadius;
+        }
+
+        float t = Mathf.Clamp01((localY - interiorBottomLocalY) / span);
+        return Mathf.Lerp(interiorBottomRadius, interiorTopRadius, t);
+    }
+#endif
 }

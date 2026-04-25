@@ -19,7 +19,8 @@
 - `Gameplay`
   - `HexSortBoardController`
   - `HexSortGlassController`
-  - Owns hold/release flow, drag-to-pour orchestration, target evaluation, and move application.
+  - `GlassPourAnimator`
+  - Owns hold/release flow, drag-to-pour orchestration, target evaluation, move application, and DOTween-driven hold/pour/release animation.
 
 - `View`
   - `HexSortMaterialLibrary`
