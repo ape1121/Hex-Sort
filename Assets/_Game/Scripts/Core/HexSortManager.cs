@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Ape.Core;
+using Ape.Data;
 using UnityEngine;
 
 public sealed class HexSortManager : MonoBehaviour
@@ -14,18 +15,13 @@ public sealed class HexSortManager : MonoBehaviour
     [SerializeField] private List<HexSortGlassController> glasses = new List<HexSortGlassController>();
     [SerializeField] private HexSortGlassController glassPrefab;
 
-    [Header("Level")]
-    [Tooltip("Optional ScriptableObject describing per-glass starting fill and capacity. If null, the hardcoded fallback layouts below are used.")]
-    [SerializeField] private HexSortLevelData levelData;
+    [Header("Level Selection")]
+    [Tooltip("Index into App.Game.Config.Levels.Levels[] for the level to load.")]
+    [Min(0)]
+    [SerializeField] private int levelIndex = 0;
 
-    [Header("Board Settings")]
-    [Tooltip("Default glass capacity when no LevelData is assigned.")]
-    [SerializeField] private int glassCapacity = 4;
-    [SerializeField] private float glassSpacing = 1.9f;
-    [SerializeField] private float glassY = 0.54f;
-    [SerializeField] private Vector2 boardExtents = new Vector2(5.5f, 1.85f);
-    [SerializeField] private Vector3 boardPivot = new Vector3(0f, 0.95f, 0f);
-    [SerializeField] private float initialZoom = 9.4f;
+    [Tooltip("Optional inline level — overrides the App.Game.Config selection if assigned. Useful for one-off scenes / debug levels.")]
+    [SerializeField] private HexSortLevelData levelDataOverride;
 
     [Header("Runtime Options")]
     [SerializeField] private bool initializeOnStart = true;
@@ -33,6 +29,8 @@ public sealed class HexSortManager : MonoBehaviour
     public bool IsInitialized { get; private set; }
 
     private HexSortMaterialLibrary materialLibrary;
+    private HexSortLevelData resolvedLevel;
+    private BoardConfig BoardCfg => App.Game?.Config != null ? App.Game.Config.Board : null;
 
     private void Start()
     {
@@ -55,6 +53,10 @@ public sealed class HexSortManager : MonoBehaviour
             return;
         }
 
+        // Resolve the level first so InstantiateGlassPrefabs (called from ResolveReferences when
+        // there are no pre-placed glasses) can read the layout count from the chosen level.
+        resolvedLevel = ResolveLevel();
+
         if (!ResolveReferences())
         {
             return;
@@ -64,12 +66,43 @@ public sealed class HexSortManager : MonoBehaviour
         pourStream.Initialize(materialLibrary);
         EnsureGlassInitialization();
 
+        BoardConfig board = BoardCfg;
+        Vector3 boardPivot = board != null ? board.BoardPivot : new Vector3(0f, 0.95f, 0f);
+        Vector2 boardExtents = board != null ? board.BoardExtents : new Vector2(5.5f, 1.85f);
+        float initialZoom = board != null ? board.InitialZoom : 9.4f;
+
         cameraController.Initialize(inputManager, mainCamera, boardPivot, initialZoom);
         LiquidColorId[][] layouts = MatchLayoutsToGlasses(CreateStartingLayouts());
         boardController.Initialize(inputManager, mainCamera, pourStream, glasses, layouts, boardExtents, boardPivot);
 
         IsInitialized = true;
-        Debug.Log("HexSortManager initialized the authored Hex Sort scene.");
+        Debug.Log($"HexSortManager initialized scene with level '{(resolvedLevel != null ? resolvedLevel.name : "<fallback>")}'.");
+    }
+
+    /// <summary>
+    /// Inline override > GameConfig.Levels[levelIndex] > null (use hardcoded fallback layouts).
+    /// </summary>
+    private HexSortLevelData ResolveLevel()
+    {
+        if (levelDataOverride != null)
+        {
+            return levelDataOverride;
+        }
+
+        GameConfig gameConfig = App.Game?.Config;
+        LevelsConfig levelsConfig = gameConfig != null ? gameConfig.Levels : null;
+        if (levelsConfig == null)
+        {
+            Debug.LogWarning("HexSortManager: App.Game.Config.Levels is unassigned; falling back to hardcoded layouts.");
+            return null;
+        }
+
+        HexSortLevelData level = levelsConfig.GetLevel(levelIndex);
+        if (level == null)
+        {
+            Debug.LogWarning($"HexSortManager: levelIndex {levelIndex} is out of range (LevelsConfig has {levelsConfig.LevelCount} entries); falling back to hardcoded layouts.");
+        }
+        return level;
     }
 
     private void EnsureGlassInitialization()
@@ -92,11 +125,12 @@ public sealed class HexSortManager : MonoBehaviour
 
     private int ResolveCapacity()
     {
-        if (levelData != null)
+        if (resolvedLevel != null)
         {
-            return Mathf.Max(1, levelData.capacity);
+            return Mathf.Max(1, resolvedLevel.capacity);
         }
-        return Mathf.Max(1, glassCapacity);
+        BoardConfig board = BoardCfg;
+        return Mathf.Max(1, board != null ? board.DefaultGlassCapacity : 4);
     }
 
     private bool ResolveReferences()
@@ -222,6 +256,10 @@ public sealed class HexSortManager : MonoBehaviour
             glassesRoot = root.transform;
         }
 
+        BoardConfig board = BoardCfg;
+        float glassSpacing = board != null ? board.GlassSpacing : 1.9f;
+        float glassY = board != null ? board.GlassY : 0.54f;
+
         LiquidColorId[][] layouts = CreateStartingLayouts();
         float startX = -((layouts.Length - 1) * glassSpacing) * 0.5f;
 
@@ -254,17 +292,18 @@ public sealed class HexSortManager : MonoBehaviour
 
     private LiquidColorId[][] CreateStartingLayouts()
     {
-        if (levelData != null && levelData.GlassCount > 0)
+        if (resolvedLevel != null && resolvedLevel.GlassCount > 0)
         {
-            int count = levelData.GlassCount;
+            int count = resolvedLevel.GlassCount;
             LiquidColorId[][] result = new LiquidColorId[count][];
             for (int i = 0; i < count; i++)
             {
-                result[i] = levelData.GetGlassUnits(i);
+                result[i] = resolvedLevel.GetGlassUnits(i);
             }
             return result;
         }
 
+        // Hardcoded fallback used only when no level has been authored / wired up yet.
         return new[]
         {
             new[] { LiquidColorId.Gold, LiquidColorId.Coral, LiquidColorId.Coral, LiquidColorId.Sky },

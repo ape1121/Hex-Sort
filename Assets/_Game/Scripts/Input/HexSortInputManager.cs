@@ -3,11 +3,15 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 using UnityEngine.InputSystem.Utilities;
 
+// Run before any gameplay/camera consumers so PollInput has refreshed the per-frame flags
+// before HexSortBoardController.Update reads them.
+[DefaultExecutionOrder(-1000)]
 public sealed class HexSortInputManager : MonoBehaviour
 {
     private object primaryCaptureOwner;
     private bool previousPrimaryHeld;
     private Vector2 previousPrimaryPosition;
+    private Vector2 primaryPressOrigin;
     private bool wasMultiTouchGesture;
     private Vector2 previousGestureCenter;
     private float previousPinchDistance;
@@ -32,6 +36,19 @@ public sealed class HexSortInputManager : MonoBehaviour
 
     public float ZoomDelta { get; private set; }
 
+    /// <summary>
+    /// Screen-space position where primary input was pressed this gesture. Resets on each
+    /// fresh press. Useful for drag-threshold checks ("is this a tap or a drag?").
+    /// </summary>
+    public Vector2 PrimaryPressOrigin => primaryPressOrigin;
+
+    /// <summary>
+    /// Cumulative screen-space distance the primary has moved since it was pressed.
+    /// </summary>
+    public float PrimaryDragDistance => PrimaryIsHeld
+        ? Vector2.Distance(PrimaryScreenPosition, primaryPressOrigin)
+        : 0f;
+
     public bool TryCapturePrimary(object owner)
     {
         if (owner == null || primaryCaptureOwner != null || !PrimaryIsHeld || MultiTouchGestureActive)
@@ -39,6 +56,26 @@ public sealed class HexSortInputManager : MonoBehaviour
             return false;
         }
 
+        primaryCaptureOwner = owner;
+        return true;
+    }
+
+    /// <summary>
+    /// Claim primary as a "drag" gesture only after the press has moved past the given pixel
+    /// threshold AND nobody else has captured it yet. Use this for low-priority, drag-only
+    /// gestures (e.g. camera orbit) so single taps fall through to other systems (e.g. glass
+    /// pickup) which capture on press.
+    /// </summary>
+    public bool TryClaimUnhandledDrag(object owner, float screenPixelThreshold)
+    {
+        if (owner == null || primaryCaptureOwner != null || !PrimaryIsHeld || MultiTouchGestureActive)
+        {
+            return false;
+        }
+        if (PrimaryDragDistance < Mathf.Max(0f, screenPixelThreshold))
+        {
+            return false;
+        }
         primaryCaptureOwner = owner;
         return true;
     }
@@ -94,6 +131,11 @@ public sealed class HexSortInputManager : MonoBehaviour
         PrimaryScreenPosition = currentPrimaryPosition;
         PrimaryPressedThisFrame = currentPrimaryHeld && !previousPrimaryHeld;
         PrimaryReleasedThisFrame = !currentPrimaryHeld && previousPrimaryHeld;
+
+        if (PrimaryPressedThisFrame)
+        {
+            primaryPressOrigin = currentPrimaryPosition;
+        }
 
         if (currentPrimaryHeld && previousPrimaryHeld)
         {

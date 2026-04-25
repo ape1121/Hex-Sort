@@ -206,13 +206,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.2588191, y: -0, z: -0, w: 0.9659258}
-  m_LocalPosition: {x: 0, y: 11.01, z: -11.75}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1169857434}
-  m_LocalEulerAnglesHint: {x: 30, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &330585547
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -274,8 +274,12 @@ MonoBehaviour:
   zoomSharpness: 10
   panSharpness: 12
   minZoom: 6.5
-  maxZoom: 13.5
+  maxZoom: 8
   pitch: 24
+  yawSensitivity: 0.35
+  yawSharpness: 14
+  yawClamp: 0
+  orbitDragThreshold: 8
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -439,6 +443,7 @@ MonoBehaviour:
   engageExitDistance: 1.55
   perUnitPourSeconds: 0.85
   streamWarmupSeconds: 0.05
+  partialCommitThreshold: 0.5
 --- !u!114 &1169857432
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -504,6 +509,7 @@ MonoBehaviour:
   glassesRoot: {fileID: 3858646411601844098}
   glasses: []
   glassPrefab: {fileID: 1074628136471331310, guid: 63979d1e8ecbaf547a736ec2f584464d, type: 3}
+  levelData: {fileID: 11400000, guid: 791f33c21ca4c3c48b47c9b74ef607e3, type: 2}
   glassCapacity: 4
   glassSpacing: 1.9
   glassY: 0.54

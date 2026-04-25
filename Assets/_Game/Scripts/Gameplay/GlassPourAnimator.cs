@@ -1,6 +1,11 @@
 using DG.Tweening;
 using UnityEngine;
 
+// Run BEFORE the default execution order so the held glass's transform.position is updated
+// (free-drag lerp / pouring lerp) before any LateUpdate-driven view component reads it.
+// In particular, GlassLiquidView's surface-disc placement depends on transform.position being
+// current — without this ordering the cap visibly lags one frame behind during fast drags.
+[DefaultExecutionOrder(-100)]
 public sealed class GlassPourAnimator : MonoBehaviour
 {
     [Header("Free Drag")]

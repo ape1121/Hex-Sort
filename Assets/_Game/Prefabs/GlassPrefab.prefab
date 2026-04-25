@@ -124,7 +124,7 @@ MonoBehaviour:
   freeHoldHeight: 2.2
   freeFollowDamping: 14
   riseDuration: 0.18
-  riseExtraHeight: 0.35
+  riseExtraHeight: 0.7
   riseEase: 6
   positionDuration: 0.42
   positionEase: 7

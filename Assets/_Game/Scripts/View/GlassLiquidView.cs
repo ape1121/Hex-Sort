@@ -1,6 +1,10 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// Run AFTER the default execution order so the surface disc reads the glass's transform.position
+// AFTER the GlassPourAnimator has updated it this frame. Otherwise the cap visibly lags one
+// frame behind during fast drags.
+[DefaultExecutionOrder(100)]
 public sealed class GlassLiquidView : MonoBehaviour
 {
     private const int RadialSegments = 24;

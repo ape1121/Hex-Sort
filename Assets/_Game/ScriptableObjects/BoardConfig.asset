@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f65ccde3275102479419f8fc676841d, type: 3}
+  m_Name: BoardConfig
+  m_EditorClassIdentifier: Assembly-CSharp::Ape.Data.BoardConfig
+  DefaultGlassCapacity: 4
+  GlassSpacing: 1.9
+  GlassY: 0.54
+  BoardExtents: {x: 5.5, y: 1.85}
+  BoardPivot: {x: 0, y: 0.95, z: 0}
+  InitialZoom: 9.4

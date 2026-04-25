@@ -166,11 +166,35 @@ Shader "HexSort/Liquid"
             }
 
             // Effective surface Y at this world XZ — used by both the surface vertex displacement
-            // AND the body's discard line so the cut and the cap stay glued together as the
-            // surface wobbles and sloshes.
+            // AND the body's discard line so the cut and the cap stay glued together.
+            //
+            // IMPORTANT: only the LINEAR slosh tilt is included. Brownian wobble is intentionally
+            // excluded from vertex Y displacement: a noise-driven Y is rasterised through linear
+            // interpolation between disc verts but evaluated exactly per-pixel by the body's
+            // discard test, and the mismatch creates "rips" — fragments where one side thinks the
+            // surface is here, the other side thinks it's there.
+            //
+            // Slosh is `dot(xz, slosh)` which is linear in worldXZ, so linear interpolation
+            // between verts is exact. The disc's Y and the body's discard line agree to floating
+            // point precision regardless of tessellation. Wobble's "moving surface" feel comes
+            // back as fragment-shader normal perturbation + caustic modulation below.
             float ComputeEffectiveFillY(float3 worldPos)
             {
-                return _FillLevel + ComputeSloshLift(worldPos) + ComputeBrownianWobble(worldPos);
+                return _FillLevel + ComputeSloshLift(worldPos);
+            }
+
+            // Wobble-driven normal perturbation. Computes the gradient of the brownian field at
+            // this XZ and bends the surface normal accordingly, so lighting & fresnel react as if
+            // the surface had real ripples even though the geometry is a clean plane.
+            float3 ComputeWobbledNormal(float3 worldPos)
+            {
+                const float h = 0.04;
+                float w = ComputeBrownianWobble(worldPos);
+                float wx = ComputeBrownianWobble(worldPos + float3(h, 0, 0));
+                float wz = ComputeBrownianWobble(worldPos + float3(0, 0, h));
+                float dx = (wx - w) / h;
+                float dz = (wz - w) / h;
+                return normalize(float3(-dx, 1.0, -dz));
             }
 
             // Returns true if `worldPos` is inside the implicit body cylinder (used to clip the
@@ -231,11 +255,11 @@ Shader "HexSort/Liquid"
             {
                 float3 baseColor;
 
-                // Foam band: thin slab above the wobbled surface where both the disc and the
-                // body render the same foam colour. Acts as a "flat cover" beneath the wobble
-                // disc — wherever the disc has interpolation gaps, the body's foam band shows
-                // the same colour, so the seam is invisible and you can't see inside the mesh.
-                const float foamBandThickness = 0.006;
+                // Foam band: thin slab above the slosh-tilted surface plane. Disc and body
+                // both render foam colour inside this slab. With wobble removed from vertex Y
+                // the disc and body now agree exactly along the slosh plane, so this only needs
+                // a tiny safety margin to absorb floating-point error.
+                const float foamBandThickness = 0.004;
 
                 if (IN.uv.y > 0.99)
                 {
@@ -246,11 +270,8 @@ Shader "HexSort/Liquid"
                         discard;
                     }
 
-                    // Upper clip only: discard fragments that interpolate above the body's foam-
-                    // band ceiling. The lower bound is intentionally NOT clipped — where disc verts
-                    // interpolate below the surface, the body's foam band renders the *same* foam
-                    // colour at the same world position, so any z-fight is invisible. This kills
-                    // the small "rips" caused by per-fragment lower-bound discards.
+                    // Upper clip only: discard fragments that interpolate above the foam band
+                    // ceiling. Slosh is linear, so interpolation is exact and this rarely fires.
                     float effectiveFill = ComputeEffectiveFillY(IN.worldPos);
                     if (IN.worldPos.y > effectiveFill + foamBandThickness)
                     {
@@ -260,6 +281,10 @@ Shader "HexSort/Liquid"
                     baseColor = _TopLayerColor.rgb * 1.05;
                     float caustic = ComputeCausticShimmer(IN.worldPos);
                     baseColor += caustic * _CausticStrength * 0.4 * _FoamColor.rgb;
+
+                    // Wobble visual via normal perturbation rather than vertex Y displacement —
+                    // robust against tessellation, no rips.
+                    IN.worldNormal = ComputeWobbledNormal(IN.worldPos);
                 }
                 else
                 {
