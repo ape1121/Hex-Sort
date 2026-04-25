@@ -54,6 +54,22 @@ public sealed class HexSortBoardController : MonoBehaviour
             glasses[i].SetUnits(initialLayouts[i]);
         }
 
+        // Publish each glass's collider list to every other glass so the held-glass collision
+        // pass can keep dragged glasses outside their neighbours.
+        List<Collider> peerColliders = new List<Collider>(glasses.Count);
+        for (int i = 0; i < glasses.Count; i++)
+        {
+            Collider c = glasses[i].Collider;
+            if (c != null)
+            {
+                peerColliders.Add(c);
+            }
+        }
+        for (int i = 0; i < glasses.Count; i++)
+        {
+            glasses[i].SetCollisionPeers(peerColliders);
+        }
+
         initialized = true;
         RefreshHighlights(null);
     }
@@ -233,7 +249,14 @@ public sealed class HexSortBoardController : MonoBehaviour
         {
             GlassPourIntent intent = heldGlass.GetPourIntent();
             Vector3 receivePoint = target.GetReceivePoint(intent.PourOrigin);
-            float streamIntensity = Mathf.Clamp01(activePourProgress * 1.5f);
+
+            // Stream intensity grows with: (a) the per-unit progress ramp and
+            // (b) how full the source still is. A nearly-full glass should produce
+            // a thicker, faster stream than a glass with one unit left.
+            int sourceCapacity = Mathf.Max(1, heldGlass.State.Capacity);
+            float fillRatio = Mathf.Clamp01((float)heldGlass.State.Count / sourceCapacity);
+            float fillBoost = Mathf.Lerp(0.4f, 1.1f, fillRatio);
+            float streamIntensity = Mathf.Clamp01(activePourProgress * 1.5f * fillBoost);
             pourStream.Show(intent.PourOrigin, receivePoint, GetLiquidColor(move.Color), streamIntensity);
         }
 

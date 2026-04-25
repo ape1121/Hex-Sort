@@ -135,40 +135,77 @@ public static class LiquidMeshFactory
         return mesh;
     }
 
-    public static Mesh BuildLiquidSurface(int radialSegments)
+    public static Mesh BuildLiquidSurface(int radialSegments, int radialRings = 6)
     {
         Mesh mesh = new Mesh
         {
             name = "HexSortLiquidSurface",
         };
 
-        int ringCount = Mathf.Max(8, radialSegments);
-        int vertCount = ringCount + 1;
+        int ringSegments = Mathf.Max(8, radialSegments);
+        int rings = Mathf.Max(1, radialRings);
+
+        // 1 centre vertex + (rings * ringSegments) vertices on concentric rings.
+        int vertCount = 1 + (rings * ringSegments);
         Vector3[] vertices = new Vector3[vertCount];
         Vector3[] normals = new Vector3[vertCount];
         Vector2[] uvs = new Vector2[vertCount];
 
-        for (int i = 0; i < ringCount; i++)
-        {
-            float angle = (Mathf.PI * 2f * i) / ringCount;
-            vertices[i] = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
-            normals[i] = Vector3.up;
-            uvs[i] = new Vector2(i / (float)ringCount, 1f);
-        }
-
-        int centerIdx = ringCount;
+        int centerIdx = 0;
         vertices[centerIdx] = Vector3.zero;
         normals[centerIdx] = Vector3.up;
         uvs[centerIdx] = new Vector2(0.5f, 1f);
 
-        int[] triangles = new int[ringCount * 3];
-        int triIdx = 0;
-        for (int i = 0; i < ringCount; i++)
+        for (int r = 0; r < rings; r++)
         {
-            int next = (i + 1) % ringCount;
+            float radius = (r + 1) / (float)rings;
+            for (int i = 0; i < ringSegments; i++)
+            {
+                int idx = 1 + (r * ringSegments) + i;
+                float angle = (Mathf.PI * 2f * i) / ringSegments;
+                vertices[idx] = new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
+                normals[idx] = Vector3.up;
+                uvs[idx] = new Vector2(i / (float)ringSegments, 1f);
+            }
+        }
+
+        // Innermost fan (centre to ring 0) + concentric strips between rings.
+        int innerFanTris = ringSegments;
+        int stripTris = (rings - 1) * ringSegments * 2;
+        int[] triangles = new int[(innerFanTris + stripTris) * 3];
+        int triIdx = 0;
+
+        // Centre fan to ring 0.
+        for (int i = 0; i < ringSegments; i++)
+        {
+            int v0 = 1 + i;
+            int v1 = 1 + ((i + 1) % ringSegments);
             triangles[triIdx++] = centerIdx;
-            triangles[triIdx++] = next;
-            triangles[triIdx++] = i;
+            triangles[triIdx++] = v1;
+            triangles[triIdx++] = v0;
+        }
+
+        // Strip between consecutive rings.
+        for (int r = 0; r < rings - 1; r++)
+        {
+            int innerStart = 1 + (r * ringSegments);
+            int outerStart = 1 + ((r + 1) * ringSegments);
+            for (int i = 0; i < ringSegments; i++)
+            {
+                int next = (i + 1) % ringSegments;
+                int v0 = innerStart + i;
+                int v1 = innerStart + next;
+                int v2 = outerStart + i;
+                int v3 = outerStart + next;
+
+                triangles[triIdx++] = v0;
+                triangles[triIdx++] = v3;
+                triangles[triIdx++] = v1;
+
+                triangles[triIdx++] = v0;
+                triangles[triIdx++] = v2;
+                triangles[triIdx++] = v3;
+            }
         }
 
         mesh.vertices = vertices;

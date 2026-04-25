@@ -7,6 +7,8 @@ public sealed class HexSortGlassController : MonoBehaviour
     [SerializeField] private Transform liquidAnchor;
     [Tooltip("Optional renderer used for the selection highlight tint. Leave null to disable highlighting.")]
     [SerializeField] private Renderer highlightRenderer;
+    [Tooltip("Collider used for held-glass collision against other glasses, and for picking. Leave null to auto-resolve via GetComponent<Collider>() on this GameObject (and add a fallback CapsuleCollider if nothing is found).")]
+    [SerializeField] private Collider glassColliderOverride;
 
     [Header("Interior Geometry (glass-local units)")]
     [Tooltip("Local Y of the interior floor — where the liquid sits.")]
@@ -27,11 +29,13 @@ public sealed class HexSortGlassController : MonoBehaviour
     private GlassLiquidView liquidView;
     private GlassPourAnimator pourAnimator;
     private GlassState state;
+    private Collider glassCollider;
     private Vector3 restPosition;
     private Vector3 previousPosition;
     private Quaternion previousRotation;
     private HexSortGlassController currentEngagedTarget;
     private float currentEngagement;
+    private float currentPreviewUnits;
     private bool isHeld;
     private bool isPouring;
     private bool isInitialized;
@@ -53,6 +57,42 @@ public sealed class HexSortGlassController : MonoBehaviour
     public float RimRadius => rimRadius;
     public float BodyMidLocalY => (interiorBottomLocalY + rimLocalY) * 0.5f;
 
+    /// <summary>
+    /// Collider used by the pour animator's collision-resolution pass to keep the held glass
+    /// outside other glasses. Resolved in <see cref="Initialize"/> from any user-authored
+    /// Collider on the same GameObject; if there is none, a fallback `CapsuleCollider` is added.
+    /// </summary>
+    public Collider Collider => glassCollider;
+
+    /// <summary>
+    /// Tell this glass which other glasses it must stay outside of while being dragged or
+    /// animated. The list is forwarded to the internal pour animator.
+    /// </summary>
+    public void SetCollisionPeers(System.Collections.Generic.IList<Collider> peers)
+    {
+        if (pourAnimator != null)
+        {
+            pourAnimator.SetCollisionPeers(peers);
+        }
+    }
+
+    /// <summary>
+    /// Continuously-varying displayed fill amount (state count plus the in-progress pour
+    /// preview). Use this for visual reactions like dynamic tilt — it varies smoothly as the
+    /// preview drains, instead of jumping by 1 at each unit-commit boundary.
+    /// </summary>
+    public float DisplayedFillUnits
+    {
+        get
+        {
+            if (state == null)
+            {
+                return 0f;
+            }
+            return Mathf.Max(0f, state.Count + currentPreviewUnits);
+        }
+    }
+
     public void Initialize(int index, int capacity, HexSortMaterialLibrary materials)
     {
         if (isInitialized)
@@ -67,6 +107,20 @@ public sealed class HexSortGlassController : MonoBehaviour
         if (interiorTopRadius < 0.01f) interiorTopRadius = 0.42f;
         if (unitHeight < 0.01f) unitHeight = 0.44f;
         if (meshTopLocalY < rimLocalY + 0.1f) meshTopLocalY = rimLocalY + 2.0f;
+
+        // Auto-clamp unitHeight so capacity * unitHeight fits within the visible interior.
+        // Without this, visual full saturates at the rim before logical full, and the pour rules
+        // happily accept more units even though the glass *looks* full.
+        float availableHeight = rimLocalY - interiorBottomLocalY - 0.05f;
+        if (availableHeight > 0.01f)
+        {
+            float maxUnitHeight = availableHeight / Mathf.Max(1, capacity);
+            if (unitHeight > maxUnitHeight)
+            {
+                Debug.LogWarning($"HexSortGlassController '{name}': unitHeight {unitHeight:F3} > {maxUnitHeight:F3} (capacity {capacity}, interior height {availableHeight:F3}). Clamping so visual full == logical full.");
+                unitHeight = maxUnitHeight;
+            }
+        }
 
         Transform liquidRoot = liquidAnchor;
         if (liquidRoot == null)
@@ -85,12 +139,21 @@ public sealed class HexSortGlassController : MonoBehaviour
 
         pourAnimator = gameObject.AddComponent<GlassPourAnimator>();
 
-        if (gameObject.GetComponent<Collider>() == null)
+        // Prefer an inspector-assigned collider (any Collider on the glass mesh, capsule, etc).
+        glassCollider = glassColliderOverride;
+        if (glassCollider == null)
         {
+            glassCollider = gameObject.GetComponent<Collider>();
+        }
+        if (glassCollider == null)
+        {
+            // Fallback so the held-glass collision still works even when the user hasn't
+            // configured a collider on the mesh yet.
             CapsuleCollider capsule = gameObject.AddComponent<CapsuleCollider>();
             capsule.center = new Vector3(0f, 1.28f, 0f);
             capsule.radius = 0.52f;
             capsule.height = 2.85f;
+            glassCollider = capsule;
         }
 
         restPosition = transform.position;
@@ -193,11 +256,13 @@ public sealed class HexSortGlassController : MonoBehaviour
 
     public void SetTransferPreview(LiquidColorId color, float units)
     {
+        currentPreviewUnits = units;
         liquidView.SetPreview(color, units);
     }
 
     public void ClearTransferPreview()
     {
+        currentPreviewUnits = 0f;
         liquidView.ClearPreview();
     }
 

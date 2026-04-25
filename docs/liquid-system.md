@@ -37,9 +37,9 @@ Fragment stage:
 2. Colour with `_TopLayerColor`, full-strength caustic shimmer, and a touch of foam.
 
 **Body fragment** (`uv.y < 0.99`):
-1. **World-Y discard**: `if (worldPos.y > _FillLevel) discard;`. The remaining geometry is exactly the liquid volume.
+1. **World-Y discard against the effective surface**: `if (worldPos.y > ComputeEffectiveFillY(worldPos)) discard;`. The discard line uses the **same** `_FillLevel + sloshLift + brownianWobble` expression that drives the surface disc's vertex displacement, so the body cut and the cap stay glued together while the surface oscillates.
 2. Bottom cap (`uv.y < 0.01`): rendered with `_Color0` darkened.
-3. Side wall: layer colour by world Y against `_Boundary0`..`_Boundary5`, depth-tinted by distance below the surface, with a softer caustic shimmer.
+3. Side wall: layer colour by world Y against `_Boundary0`..`_Boundary5`, depth-tinted by distance below the *effective* surface, with a softer caustic shimmer.
 
 All fragments end with a single Lambert + ambient + view-direction fresnel pass.
 

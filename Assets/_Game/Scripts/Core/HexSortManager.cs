@@ -14,7 +14,12 @@ public sealed class HexSortManager : MonoBehaviour
     [SerializeField] private List<HexSortGlassController> glasses = new List<HexSortGlassController>();
     [SerializeField] private HexSortGlassController glassPrefab;
 
+    [Header("Level")]
+    [Tooltip("Optional ScriptableObject describing per-glass starting fill and capacity. If null, the hardcoded fallback layouts below are used.")]
+    [SerializeField] private HexSortLevelData levelData;
+
     [Header("Board Settings")]
+    [Tooltip("Default glass capacity when no LevelData is assigned.")]
     [SerializeField] private int glassCapacity = 4;
     [SerializeField] private float glassSpacing = 1.9f;
     [SerializeField] private float glassY = 0.54f;
@@ -60,7 +65,8 @@ public sealed class HexSortManager : MonoBehaviour
         EnsureGlassInitialization();
 
         cameraController.Initialize(inputManager, mainCamera, boardPivot, initialZoom);
-        boardController.Initialize(inputManager, mainCamera, pourStream, glasses, CreateStartingLayouts(), boardExtents, boardPivot);
+        LiquidColorId[][] layouts = MatchLayoutsToGlasses(CreateStartingLayouts());
+        boardController.Initialize(inputManager, mainCamera, pourStream, glasses, layouts, boardExtents, boardPivot);
 
         IsInitialized = true;
         Debug.Log("HexSortManager initialized the authored Hex Sort scene.");
@@ -68,6 +74,7 @@ public sealed class HexSortManager : MonoBehaviour
 
     private void EnsureGlassInitialization()
     {
+        int capacity = ResolveCapacity();
         for (int i = 0; i < glasses.Count; i++)
         {
             HexSortGlassController glass = glasses[i];
@@ -78,9 +85,18 @@ public sealed class HexSortManager : MonoBehaviour
 
             if (!glass.IsInitialized)
             {
-                glass.Initialize(i, glassCapacity, materialLibrary);
+                glass.Initialize(i, capacity, materialLibrary);
             }
         }
+    }
+
+    private int ResolveCapacity()
+    {
+        if (levelData != null)
+        {
+            return Mathf.Max(1, levelData.capacity);
+        }
+        return Mathf.Max(1, glassCapacity);
     }
 
     private bool ResolveReferences()
@@ -220,8 +236,35 @@ public sealed class HexSortManager : MonoBehaviour
         }
     }
 
-    private static LiquidColorId[][] CreateStartingLayouts()
+    private LiquidColorId[][] MatchLayoutsToGlasses(LiquidColorId[][] layouts)
     {
+        if (layouts.Length == glasses.Count)
+        {
+            return layouts;
+        }
+
+        Debug.LogWarning($"HexSortManager: starting layouts ({layouts.Length}) don't match glass count ({glasses.Count}). Padding/trimming.");
+        LiquidColorId[][] adjusted = new LiquidColorId[glasses.Count][];
+        for (int i = 0; i < glasses.Count; i++)
+        {
+            adjusted[i] = i < layouts.Length ? layouts[i] : new LiquidColorId[0];
+        }
+        return adjusted;
+    }
+
+    private LiquidColorId[][] CreateStartingLayouts()
+    {
+        if (levelData != null && levelData.GlassCount > 0)
+        {
+            int count = levelData.GlassCount;
+            LiquidColorId[][] result = new LiquidColorId[count][];
+            for (int i = 0; i < count; i++)
+            {
+                result[i] = levelData.GetGlassUnits(i);
+            }
+            return result;
+        }
+
         return new[]
         {
             new[] { LiquidColorId.Gold, LiquidColorId.Coral, LiquidColorId.Coral, LiquidColorId.Sky },

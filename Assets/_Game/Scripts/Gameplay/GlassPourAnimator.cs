@@ -18,9 +18,14 @@ public sealed class GlassPourAnimator : MonoBehaviour
     [SerializeField] private Ease positionEase = Ease.InOutQuad;
 
     [Header("Pour Pose")]
-    [SerializeField] private float pourTiltAngle = 55f;
+    [Tooltip("Tilt angle when the source glass is FULL.")]
+    [SerializeField] private float pourTiltAngleFull = 35f;
+    [Tooltip("Tilt angle when the source glass is nearly EMPTY (last unit).")]
+    [SerializeField] private float pourTiltAngleEmpty = 80f;
     [Tooltip("Gap (in world units) between the source's tilted rim edge and the target's rim edge. 0 = lips touch exactly.")]
     [SerializeField] private float pourLipClearance = 0f;
+    [Tooltip("How fast the pose lerps toward the dynamic-fill pose during the Pouring state. Higher = snappier.")]
+    [SerializeField] private float dynamicPoseDamping = 6f;
 
     [Header("Disengagement")]
     [SerializeField] private float disengageDuration = 0.32f;
@@ -47,15 +52,115 @@ public sealed class GlassPourAnimator : MonoBehaviour
     private HexSortGlassController activeTarget;
     private HexSortGlassController sourceController;
     private Vector3 freeDragTargetPosition;
+    private Collider[] collisionPeers = new Collider[0];
+
+    [Header("Collision")]
+    [Tooltip("How many penetration-resolution iterations per frame. 1-3 is enough for typical scenes.")]
+    [Range(1, 5)]
+    [SerializeField] private int collisionResolutionIterations = 3;
 
     private void Awake()
     {
         sourceController = GetComponent<HexSortGlassController>();
     }
 
+    /// <summary>
+    /// Set the colliders this glass must stay outside of while being dragged or animated.
+    /// The source's own collider is automatically excluded.
+    /// </summary>
+    public void SetCollisionPeers(System.Collections.Generic.IList<Collider> peers)
+    {
+        if (peers == null)
+        {
+            collisionPeers = new Collider[0];
+            return;
+        }
+
+        Collider self = sourceController != null ? sourceController.Collider : GetComponent<Collider>();
+
+        var list = new System.Collections.Generic.List<Collider>(peers.Count);
+        for (int i = 0; i < peers.Count; i++)
+        {
+            Collider peer = peers[i];
+            if (peer == null || peer == self)
+            {
+                continue;
+            }
+            list.Add(peer);
+        }
+        collisionPeers = list.ToArray();
+    }
+
+    private void ResolveCollisions()
+    {
+        if (collisionPeers == null || collisionPeers.Length == 0)
+        {
+            return;
+        }
+        if (sourceController == null || sourceController.Collider == null)
+        {
+            return;
+        }
+
+        Collider mine = sourceController.Collider;
+        Vector3 myPos = transform.position;
+        Quaternion myRot = transform.rotation;
+
+        // Iterate so a glass squeezed between two others is pushed to a stable position.
+        int iterations = Mathf.Max(1, collisionResolutionIterations);
+        for (int iter = 0; iter < iterations; iter++)
+        {
+            bool corrected = false;
+            for (int i = 0; i < collisionPeers.Length; i++)
+            {
+                Collider other = collisionPeers[i];
+                if (other == null || !other.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+
+                if (Physics.ComputePenetration(
+                    mine, myPos, myRot,
+                    other, other.transform.position, other.transform.rotation,
+                    out Vector3 dir, out float dist))
+                {
+                    myPos += dir * dist;
+                    corrected = true;
+                }
+            }
+            if (!corrected)
+            {
+                break;
+            }
+        }
+
+        transform.position = myPos;
+    }
+
     private float SourceMidLocalY => sourceController != null ? sourceController.BodyMidLocalY : 1.18f;
     private float SourceRimLocalY => sourceController != null ? sourceController.RimLocalY : 2.18f;
     private float SourceRimRadius => sourceController != null ? sourceController.RimRadius : 0.34f;
+
+    private float ComputeFillRatio()
+    {
+        if (sourceController == null || sourceController.State == null)
+        {
+            return 1f;
+        }
+
+        int capacity = Mathf.Max(1, sourceController.State.Capacity);
+        // DisplayedFillUnits is state.Count + previewUnits and varies continuously while a unit
+        // is being poured, so the dynamic tilt also varies continuously instead of jerking at
+        // unit-commit boundaries.
+        return Mathf.Clamp01(sourceController.DisplayedFillUnits / capacity);
+    }
+
+    private float ComputeDynamicTiltAngle()
+    {
+        // Empty glass needs more tilt to drain its last drop, full glass barely needs to lean.
+        float fillRatio = ComputeFillRatio();
+        return Mathf.Lerp(pourTiltAngleEmpty, pourTiltAngleFull, fillRatio);
+    }
 
     public bool IsPouring => state == AnimState.Pouring;
     public bool IsEngaged => state == AnimState.Engaging || state == AnimState.Pouring;
@@ -178,6 +283,11 @@ public sealed class GlassPourAnimator : MonoBehaviour
 
     private Quaternion ComputePourRotation(HexSortGlassController target)
     {
+        return ComputePourRotationWithAngle(target, ComputeDynamicTiltAngle());
+    }
+
+    private Quaternion ComputePourRotationWithAngle(HexSortGlassController target, float tiltAngleDeg)
+    {
         Vector3 toTarget = target.transform.position - transform.position;
         toTarget.y = 0f;
         if (toTarget.sqrMagnitude < 0.0001f)
@@ -192,7 +302,7 @@ public sealed class GlassPourAnimator : MonoBehaviour
             return Quaternion.identity;
         }
 
-        return Quaternion.AngleAxis(pourTiltAngle, axis.normalized);
+        return Quaternion.AngleAxis(tiltAngleDeg, axis.normalized);
     }
 
     private Vector3 ComputePourPosition(HexSortGlassController target, Quaternion pourRotation)
@@ -240,20 +350,41 @@ public sealed class GlassPourAnimator : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (state != AnimState.FreeDragging)
-        {
-            return;
-        }
-
         float deltaTime = Time.deltaTime;
         if (deltaTime <= 0f)
         {
             return;
         }
 
-        float lerp = 1f - Mathf.Exp(-freeFollowDamping * deltaTime);
-        transform.position = Vector3.Lerp(transform.position, freeDragTargetPosition, lerp);
-        transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.identity, lerp);
+        if (state == AnimState.Pouring && activeTarget != null)
+        {
+            // Dynamically tilt more as the source empties — real water needs progressively
+            // steeper angles to keep flowing as the level drops below the rim.
+            Quaternion targetRotation = ComputePourRotation(activeTarget);
+            Vector3 targetPosition = ComputePourPosition(activeTarget, targetRotation);
+
+            float pourLerp = 1f - Mathf.Exp(-Mathf.Max(0.01f, dynamicPoseDamping) * deltaTime);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, pourLerp);
+            transform.position = Vector3.Lerp(transform.position, targetPosition, pourLerp);
+            ResolveCollisions();
+            return;
+        }
+
+        if (state != AnimState.FreeDragging)
+        {
+            // Engaging / Disengaging / Returning are DOTween-driven; still keep the held glass
+            // outside its peers if a tween path would push through one.
+            if (state != AnimState.Idle)
+            {
+                ResolveCollisions();
+            }
+            return;
+        }
+
+        float dragLerp = 1f - Mathf.Exp(-freeFollowDamping * deltaTime);
+        transform.position = Vector3.Lerp(transform.position, freeDragTargetPosition, dragLerp);
+        transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.identity, dragLerp);
+        ResolveCollisions();
     }
 
     private void OnDisable()

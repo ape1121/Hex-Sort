@@ -165,6 +165,14 @@ Shader "HexSort/Liquid"
                 return fromCentre.x * _SloshX + fromCentre.y * _SloshZ;
             }
 
+            // Effective surface Y at this world XZ — used by both the surface vertex displacement
+            // AND the body's discard line so the cut and the cap stay glued together as the
+            // surface wobbles and sloshes.
+            float ComputeEffectiveFillY(float3 worldPos)
+            {
+                return _FillLevel + ComputeSloshLift(worldPos) + ComputeBrownianWobble(worldPos);
+            }
+
             // Returns true if `worldPos` is inside the implicit body cylinder (used to clip the
             // surface disc to the glass interior cross-section regardless of tilt or taper).
             bool IsInsideBodyCylinder(float3 worldPos)
@@ -204,9 +212,10 @@ Shader "HexSort/Liquid"
 
                 if (IN.uv.y > 0.99)
                 {
-                    // Surface disc: brownian wobble + slosh tilt.
-                    float sloshLift = ComputeSloshLift(worldPos);
-                    worldPos.y += sloshLift + ComputeBrownianWobble(worldPos);
+                    // Surface disc: place each vertex at the effective surface height for its XZ,
+                    // with a small upward bias so it sits a hair above the body cut and never
+                    // z-fights with body fragments at the surface.
+                    worldPos.y = ComputeEffectiveFillY(worldPos) + 0.0025;
                     worldNormal = float3(0, 1, 0);
                 }
 
@@ -222,6 +231,12 @@ Shader "HexSort/Liquid"
             {
                 float3 baseColor;
 
+                // Foam band: thin slab above the wobbled surface where both the disc and the
+                // body render the same foam colour. Acts as a "flat cover" beneath the wobble
+                // disc — wherever the disc has interpolation gaps, the body's foam band shows
+                // the same colour, so the seam is invisible and you can't see inside the mesh.
+                const float foamBandThickness = 0.006;
+
                 if (IN.uv.y > 0.99)
                 {
                     // Surface fragment: clip to actual body cross-section so the disc reads as the
@@ -231,17 +246,27 @@ Shader "HexSort/Liquid"
                         discard;
                     }
 
-                    baseColor = _TopLayerColor.rgb;
+                    // Upper clip only: discard fragments that interpolate above the body's foam-
+                    // band ceiling. The lower bound is intentionally NOT clipped — where disc verts
+                    // interpolate below the surface, the body's foam band renders the *same* foam
+                    // colour at the same world position, so any z-fight is invisible. This kills
+                    // the small "rips" caused by per-fragment lower-bound discards.
+                    float effectiveFill = ComputeEffectiveFillY(IN.worldPos);
+                    if (IN.worldPos.y > effectiveFill + foamBandThickness)
+                    {
+                        discard;
+                    }
+
+                    baseColor = _TopLayerColor.rgb * 1.05;
                     float caustic = ComputeCausticShimmer(IN.worldPos);
-                    baseColor += caustic * _CausticStrength * _FoamColor.rgb;
-                    baseColor = lerp(baseColor, _FoamColor.rgb, _FoamStrength * 0.5);
-                    baseColor *= 1.04;
+                    baseColor += caustic * _CausticStrength * 0.4 * _FoamColor.rgb;
                 }
                 else
                 {
-                    // Body fragment: discard above the world horizontal fill plane so the
-                    // visible body is exactly the liquid volume (the "scoop" shape under tilt).
-                    if (IN.worldPos.y > _FillLevel + 0.001)
+                    // Body fragment: hard discard above the foam band. Inside the band, render
+                    // the same foam colour as the disc; below, render the normal layer colour.
+                    float effectiveFill = ComputeEffectiveFillY(IN.worldPos);
+                    if (IN.worldPos.y > effectiveFill + foamBandThickness)
                     {
                         discard;
                     }
@@ -251,12 +276,20 @@ Shader "HexSort/Liquid"
                         // Bottom cap.
                         baseColor = _Color0.rgb * 0.92;
                     }
+                    else if (IN.worldPos.y > effectiveFill)
+                    {
+                        // Foam band fills the slab above the wobbly surface so disc gaps never
+                        // expose the body's far inside wall.
+                        baseColor = _TopLayerColor.rgb * 1.05;
+                        float caustic = ComputeCausticShimmer(IN.worldPos);
+                        baseColor += caustic * _CausticStrength * 0.4 * _FoamColor.rgb;
+                    }
                     else
                     {
-                        // Side wall: layer colour by WORLD Y so layers stay horizontal under tilt.
+                        // Side wall below the surface: layer colour by world Y.
                         baseColor = GetLayerColor(IN.worldPos.y);
 
-                        float depthFromTop = max(0, _FillLevel - IN.worldPos.y);
+                        float depthFromTop = max(0, effectiveFill - IN.worldPos.y);
                         float depthFactor = saturate(depthFromTop / 0.85);
                         baseColor *= lerp(1.05, 1.0 - _DepthTint, depthFactor);
 

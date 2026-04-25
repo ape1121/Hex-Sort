@@ -187,13 +187,20 @@ public sealed class GlassLiquidView : MonoBehaviour
         float fillLocalTop = interiorBottomLocalY + fillLocalHeight;
         float uprightFillLevel = transform.position.y + fillLocalTop;
 
-        // Cap at the rim's lowest point in world so liquid can never visually overflow.
+        // Clamp at the actual world-Y of the rim's lowest point (accounts for tilt).
+        // The rim is a circle of radius rimRadius around the rim centre, in the plane perpendicular
+        // to glass.up. Its lowest world Y equals rimCenterY - rimRadius * sin(tiltAngle), where
+        // sin(tiltAngle) = horizontal component magnitude of glass.up.
         Vector3 glassUp = transform.up;
         float upY = Mathf.Max(0.05f, glassUp.y);
+        float horizontalLean = Mathf.Sqrt(Mathf.Max(0f, 1f - upY * upY));
         float rimCenterWorldY = transform.position.y + (upY * rimLocalY);
-        float rimSafeWorldY = rimCenterWorldY - 0.05f;
+        // Approximate the rim's outer radius as the interior top radius (no rimRadius available
+        // here without further plumbing — close enough for the visual safety margin).
+        float effectiveRimRadius = Mathf.Max(interiorBottomRadius, interiorTopRadius);
+        float rimLowestWorldY = rimCenterWorldY - (horizontalLean * (effectiveRimRadius + 0.02f));
 
-        return Mathf.Min(uprightFillLevel, rimSafeWorldY);
+        return Mathf.Min(uprightFillLevel, rimLowestWorldY);
     }
 
     private void PushFillUniforms(float fillLevel)

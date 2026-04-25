@@ -87,6 +87,33 @@ Goal: liquid should *feel like water under gravity*. Surface and layers should r
 - [ ] Bump cap radial segments from 24 → 32 if banding still visible after testing.
 - [x] `docs/liquid-system.md` updated with slosh model, shader behaviour, uniforms, and tuning fields.
 
+## Smooth Tilt + Visual/Logical Capacity Sync Pass
+
+- [x] **Smooth dynamic tilt**: animator's `ComputeFillRatio` now reads `sourceController.DisplayedFillUnits` (state count plus the live pour preview) instead of integer `State.Count`. Fill ratio varies continuously while a unit is being poured, so the tilt lerp tracks a continuously-moving target instead of stepping at unit-commit boundaries.
+- [x] **`DisplayedFillUnits` exposed on `HexSortGlassController`**: tracked via `currentPreviewUnits`, updated in `SetTransferPreview` / `ClearTransferPreview`. Returns `Mathf.Max(0, state.Count + currentPreviewUnits)`.
+- [x] **Visual full == logical full**: at `Initialize`, `unitHeight` is auto-clamped to `(rimLocalY - interiorBottomLocalY - 0.05) / capacity`. If the inspector-set `unitHeight` would push capacity × unitHeight above the rim, it's reduced (with a warning) so the visual fill plane reaches the rim *exactly* at logical full. Fixes "I can keep pouring even though the glass looks full" — that was the rim-safe clamp saturating the fill plane before `state.Count` hit `Capacity`.
+
+## Realistic Pouring + Cap Sync Pass
+
+- [x] **Cap-rip on fast motion**: per-fragment clip on the surface disc. The vertex shader already places disc verts at `ComputeEffectiveFillY`, but linear interpolation between verts overshoots the actual noise value at high wobble/slosh amplitude. The disc fragment now also `discard`s if `worldPos.y > effectiveFill`, so the cap's top edge is exactly mated to the body cut at every pixel.
+- [x] **Water level too high at tilt**: `ComputeFillLevelWorldY` now clamps to the *actual* lowest world-Y of the rim (`rimCenter - sqrt(1 - upY²) * rimRadius`) instead of a constant 0.05m margin. At 55° tilt with `rimRadius = 0.34` this drops the cap by ~0.28m so it sits *inside* the visible rim. Layer boundaries scale to fit this lower span, so layers compress proportionally when the rim is the limiting factor.
+- [x] **Dynamic pour tilt with fill**: `pourTiltAngle` is replaced with a pair of fields `pourTiltAngleFull` (default 35°) and `pourTiltAngleEmpty` (default 80°). `GlassPourAnimator.ComputeDynamicTiltAngle()` lerps between them based on `sourceController.State.Count / Capacity`. As the source empties, the glass tilts further to keep the liquid flowing — matches real-world pouring behaviour.
+- [x] **Smooth dynamic-pose tracking**: `GlassPourAnimator.LateUpdate` now tracks the dynamic pour pose during the `Pouring` state (continuous lerp toward the fill-aware `(rotation, position)` with `dynamicPoseDamping = 6` exponential smoothing). The glass smoothly tilts further as each unit drains.
+- [x] **Stream intensity with fill**: `HexSortBoardController.TickPourFlow` now multiplies stream intensity by `Lerp(0.4, 1.1, fillRatio)` so a nearly-full source produces a thicker / faster stream and a near-empty one produces a thinner trickle.
+
+## Surface-Body Sync + Level Data Pass
+
+- [x] **Cap-rip fix**: shader now defines `ComputeEffectiveFillY(worldPos) = _FillLevel + ComputeSloshLift(worldPos) + ComputeBrownianWobble(worldPos)`. Both the surface disc vertex displacement *and* the body fragment discard line use this same expression — so the cap and the body cut share the exact same wobbled, sloshed surface and never separate.
+- [x] **Depth tint** in the body now uses the effective fill (not the static `_FillLevel`), so the depth gradient also breathes with the surface.
+- [x] **`HexSortLevelData` ScriptableObject** ([Assets/_Game/Scripts/Core/HexSortLevelData.cs](Assets/_Game/Scripts/Core/HexSortLevelData.cs)) — `[CreateAssetMenu(menuName = "HexSort/Level Data")]`. Fields: `capacity` (int), `glasses` (per-glass `units` arrays of `LiquidColorId`, bottom-to-top). Helper `GetGlassUnits(index)` truncates to capacity.
+- [x] **`HexSortManager`** now reads from an optional `levelData` SerializeField:
+  - `ResolveCapacity()` returns `levelData.capacity` if assigned, else the inspector `glassCapacity` field.
+  - `CreateStartingLayouts()` returns the level data's per-glass fills, falling back to the hardcoded layouts.
+  - `MatchLayoutsToGlasses()` pads/trims layouts to match the actual instantiated glass count, with a warning when mismatched.
+  - When `levelData` defines `N` glasses and `glassPrefab` is set with no pre-placed glasses, `InstantiateGlassPrefabs` spawns exactly `N`.
+
+To author a level: right-click in the Project window → **Create → HexSort → Level Data**, set `capacity`, add entries to `glasses`, fill in each glass's `units` array. Drop the asset into `HexSortManager.levelData` on the scene root.
+
 ## Real-Liquid Implicit-Body Pass
 
 Goal: render the liquid as the *actual physical intersection* of the glass interior cylinder with a horizontal world plane at the fill level. Cap is geometrically correct at any tilt; layers stay gravity-aligned.
