@@ -2,7 +2,7 @@
 
 A water-sort puzzle game prototype built in Unity. Drag a glass, hold it near another, and the liquid pours into it one unit at a time. Sort each glass to a single colour to clear the level. Endless procedurally generated levels with star grading.
 
-![Image](ss.png)
+![Image](preview.png)
 
 ## Tech
 
