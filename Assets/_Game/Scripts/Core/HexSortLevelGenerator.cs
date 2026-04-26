@@ -116,6 +116,9 @@ public static class HexSortLevelGenerator
                 units = glasses[i].ToArray(),
             };
         }
+        // Par = scramble move count. The optimal solution is at most this many moves (often
+        // fewer thanks to redundant scramble steps), so par is a reasonable 3-star bar.
+        target.parMoves = Mathf.Max(1, parameters.scrambleMoves);
     }
 
     private static void ApplyRandomReverseMove(List<List<LiquidColorId>> glasses, System.Random rng, int capacity)

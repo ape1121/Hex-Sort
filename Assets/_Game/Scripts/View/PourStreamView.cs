@@ -1,7 +1,12 @@
+using Ape.Core;
 using UnityEngine;
 
 public sealed class PourStreamView : MonoBehaviour
 {
+    [Header("Audio")]
+    [Tooltip("SoundManager clip name played (looping) while the stream is visible. Empty = silent. The clip itself should have Loop = true on its Sound asset.")]
+    [SerializeField] private string pourSoundName = "pour";
+
     private const int ArcSegmentCount = 18;
     private const int RadialSideCount = 8;
     private const int IgnoreRaycastLayer = 2;
@@ -72,6 +77,13 @@ public sealed class PourStreamView : MonoBehaviour
         toPoint = endPoint;
         currentColor = color;
         currentIntensity = Mathf.Clamp01(intensity);
+
+        // Fire the loop sound only on the off→on edge so we don't keep restarting it every
+        // frame the stream is visible.
+        if (!isVisible)
+        {
+            StartPourSound();
+        }
         isVisible = true;
 
         if (splashSystem != null && !splashSystem.isPlaying)
@@ -84,6 +96,10 @@ public sealed class PourStreamView : MonoBehaviour
 
     public void Hide()
     {
+        if (isVisible)
+        {
+            StopPourSound();
+        }
         isVisible = false;
         if (tubeRenderer != null)
         {
@@ -93,6 +109,35 @@ public sealed class PourStreamView : MonoBehaviour
         if (splashSystem != null && splashSystem.isPlaying)
         {
             splashSystem.Stop(false, ParticleSystemStopBehavior.StopEmitting);
+        }
+    }
+
+    private void StartPourSound()
+    {
+        if (string.IsNullOrEmpty(pourSoundName) || App.Sound == null)
+        {
+            return;
+        }
+        App.Sound.PlaySound(pourSoundName);
+    }
+
+    private void StopPourSound()
+    {
+        if (string.IsNullOrEmpty(pourSoundName) || App.Sound == null)
+        {
+            return;
+        }
+        App.Sound.StopSound(pourSoundName);
+    }
+
+    private void OnDisable()
+    {
+        // Make sure the loop doesn't keep playing if the view is disabled mid-pour (e.g. on
+        // scene unload).
+        if (isVisible)
+        {
+            StopPourSound();
+            isVisible = false;
         }
     }
 

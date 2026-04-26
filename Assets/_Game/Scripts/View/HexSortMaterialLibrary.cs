@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Ape.Data;
 using UnityEngine;
 
 public sealed class HexSortMaterialLibrary
@@ -11,14 +12,27 @@ public sealed class HexSortMaterialLibrary
     private readonly Texture2D dropletSpriteTexture;
     private readonly Shader liquidShader;
 
-    public HexSortMaterialLibrary()
+    public HexSortMaterialLibrary(ColorsConfig colorsConfig = null)
     {
-        liquidColors[LiquidColorId.Coral] = new Color(0.96f, 0.39f, 0.35f);
-        liquidColors[LiquidColorId.Sky] = new Color(0.25f, 0.67f, 0.98f);
-        liquidColors[LiquidColorId.Mint] = new Color(0.34f, 0.88f, 0.69f);
-        liquidColors[LiquidColorId.Gold] = new Color(0.98f, 0.79f, 0.28f);
-        liquidColors[LiquidColorId.Grape] = new Color(0.58f, 0.41f, 0.89f);
-        liquidColors[LiquidColorId.Rose] = new Color(0.97f, 0.50f, 0.71f);
+        // Seed palette from ColorsConfig if provided, otherwise fall back to baked defaults so
+        // the library still works in scenes / tests without a config asset wired up.
+        if (colorsConfig != null && colorsConfig.Entries != null)
+        {
+            for (int i = 0; i < colorsConfig.Entries.Length; i++)
+            {
+                var entry = colorsConfig.Entries[i];
+                if (entry.Id != LiquidColorId.None)
+                {
+                    liquidColors[entry.Id] = entry.Color;
+                }
+            }
+        }
+        if (!liquidColors.ContainsKey(LiquidColorId.Coral)) liquidColors[LiquidColorId.Coral] = new Color(0.96f, 0.39f, 0.35f);
+        if (!liquidColors.ContainsKey(LiquidColorId.Sky))   liquidColors[LiquidColorId.Sky]   = new Color(0.25f, 0.67f, 0.98f);
+        if (!liquidColors.ContainsKey(LiquidColorId.Mint))  liquidColors[LiquidColorId.Mint]  = new Color(0.34f, 0.88f, 0.69f);
+        if (!liquidColors.ContainsKey(LiquidColorId.Gold))  liquidColors[LiquidColorId.Gold]  = new Color(0.98f, 0.79f, 0.28f);
+        if (!liquidColors.ContainsKey(LiquidColorId.Grape)) liquidColors[LiquidColorId.Grape] = new Color(0.58f, 0.41f, 0.89f);
+        if (!liquidColors.ContainsKey(LiquidColorId.Rose))  liquidColors[LiquidColorId.Rose]  = new Color(0.97f, 0.50f, 0.71f);
 
         GlassMaterial = RuntimeViewUtility.CreateTransparentLitMaterial(new Color(0.93f, 0.97f, 1f, 0.24f), 1f);
         BoardMaterial = RuntimeViewUtility.CreateOpaqueMaterial(new Color(0.96f, 0.91f, 0.84f), 0.12f);

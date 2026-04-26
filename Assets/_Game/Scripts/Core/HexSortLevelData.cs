@@ -14,6 +14,10 @@ public sealed class HexSortLevelData : ScriptableObject
     [Min(1)]
     public int capacity = 4;
 
+    [Tooltip("Par (target) move count used for star grading. 3 stars at moves <= par, 2 stars at <= 1.5*par, 1 star otherwise. The generator sets this automatically; 0 disables grading (always 3 stars).")]
+    [Min(0)]
+    public int parMoves = 0;
+
     [Tooltip("Per-glass starting fill, in scene order (left-to-right by default). Empty entries become empty glasses.")]
     public GlassFill[] glasses = new GlassFill[0];
 

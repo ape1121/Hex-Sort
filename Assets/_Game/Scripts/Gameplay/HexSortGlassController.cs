@@ -134,10 +134,22 @@ public sealed class HexSortGlassController : MonoBehaviour
             highlightRenderer.sharedMaterial = materials.CreateHighlightMaterialInstance();
         }
 
-        liquidView = gameObject.AddComponent<GlassLiquidView>();
+        // Prefer prefab-attached components so the inspector-configured tunables survive — a
+        // bare AddComponent would silently spawn a second instance with default values that
+        // overwrites the prefab one in LateUpdate (e.g. pourTiltAngleFull/pourHeightOffset
+        // edits would appear to have no effect).
+        liquidView = gameObject.GetComponent<GlassLiquidView>();
+        if (liquidView == null)
+        {
+            liquidView = gameObject.AddComponent<GlassLiquidView>();
+        }
         liquidView.Initialize(liquidRoot, state, materials, capacity, interiorBottomLocalY, unitHeight, interiorBottomRadius, interiorTopRadius, meshTopLocalY, rimLocalY);
 
-        pourAnimator = gameObject.AddComponent<GlassPourAnimator>();
+        pourAnimator = gameObject.GetComponent<GlassPourAnimator>();
+        if (pourAnimator == null)
+        {
+            pourAnimator = gameObject.AddComponent<GlassPourAnimator>();
+        }
 
         // Prefer an inspector-assigned collider (any Collider on the glass mesh, capsule, etc).
         glassCollider = glassColliderOverride;
@@ -286,15 +298,30 @@ public sealed class HexSortGlassController : MonoBehaviour
 
     public Vector3 GetReceivePoint(Vector3 sourcePosition)
     {
+        // Land the stream on the *actual* liquid surface inside the glass — not the rim — so
+        // the pour tube extends all the way down and the splash particles fire on the
+        // liquid surface instead of in mid-air at the rim. Falls back to a point just above
+        // the floor when the glass is empty.
+        float surfaceLocalY = interiorBottomLocalY + (DisplayedFillUnits * unitHeight);
+        // Stay below the rim by a small margin so the particle position is unambiguously
+        // inside the cup, even when the glass is nearly full.
+        surfaceLocalY = Mathf.Min(surfaceLocalY, rimLocalY - 0.05f);
+        if (state != null && state.IsEmpty)
+        {
+            surfaceLocalY = interiorBottomLocalY + 0.02f;
+        }
+
         Vector3 toSource = sourcePosition - transform.position;
         toSource.y = 0f;
         if (toSource.sqrMagnitude < 0.0001f)
         {
             toSource = Vector3.left;
         }
-
         toSource.Normalize();
-        return transform.position + (Vector3.up * rimLocalY) + (toSource * rimRadius * 0.55f);
+
+        // Small lateral bias toward the source side keeps the impact off dead-centre for
+        // visual variety, but well inside the interior radius.
+        return transform.position + (Vector3.up * surfaceLocalY) + (toSource * rimRadius * 0.15f);
     }
 
     public GlassPourIntent GetPourIntent()

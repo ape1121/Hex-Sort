@@ -103,13 +103,27 @@ The interaction loop is now free-drag with proximity-based auto-pour, animated e
 
 ### Pour Pose Geometry
 
-For a held glass and chosen target, the pour pose is constructed from these tunables (all `[SerializeField]` on `GlassPourAnimator`):
+For a held glass and chosen target, the pour pose is solved by inverse kinematics so the source's tilted downhill rim point lands at the target's source-facing rim edge:
 
-- `pourTiltAngle` (default 55°): held glass rotates by `AngleAxis(angle, Cross(world up, toTargetDirection))` so the lip extends toward the target.
-- `pourMidLateralOffset` (default 0.72m): mid-body anchor sits this far back from the target on the source-facing side.
-- `pourMidHeight` (default 2.7m): mid-body anchor world Y above the target's foot.
-- `pourLipClearance` (default 0.05m): small extra rise so the lip clears the target rim.
-- `midGlassHeight` (default 1.18m): position is computed so the mid-body lands on the anchor: `glass.position = pourAnchor - pourRotation * (up * midGlassHeight)`.
+```
+desiredLipWorld = target.position + up * target.RimLocalY
+                  - toTargetDir * (target.RimRadius + pourLipClearance)
+basePosition    = desiredLipWorld
+                  - pourRotation * (up * SourceRimLocalY + toTargetDir * SourceRimRadius)
+finalPosition   = basePosition
+                  + (target.position - basePosition).xz * pourCenterBias
+                  + up * pourHeightOffset
+```
+
+`pourRotation` is `AngleAxis(dynamicTilt, Cross(up, toTargetDir))`, where `dynamicTilt` lerps from `pourTiltAngleFull` (default 35°) to `pourTiltAngleEmpty` (default 80°) as the source drains.
+
+Tunables (all `[SerializeField]` on `GlassPourAnimator`):
+
+- `pourTiltAngleFull` / `pourTiltAngleEmpty`: tilt range over the source fill ratio.
+- `pourLipClearance` (default 0): visible gap between the source's downhill rim and the target's rim. 0 = lips touch.
+- `pourHeightOffset` (default 0): extra Y added to the source so it pours from above the target rim.
+- `pourCenterBias` (default 0, range 0..1): horizontal lerp of the source toward the target's centre. Small values (~0.1–0.3) nudge the source over the target without losing the lip alignment.
+- `dynamicPoseDamping` (default 6): exponential lerp toward the dynamic-tilt pose during `Pouring`.
 
 ### Board Controller Loop
 
@@ -132,20 +146,24 @@ All animation knobs are `[SerializeField]` on `GlassPourAnimator`:
 | `freeFollowDamping` | 14 | Higher = snappier cursor follow. |
 | `riseDuration` | 0.18s | First step of the engage sequence (vertical lift). |
 | `riseExtraHeight` | 0.35m | How much higher than the pour pose the glass rises before traversing. |
-| `riseEase` | OutQuad | Ease on the rise step. |
 | `positionDuration` | 0.42s | Second step (traverse + tilt). |
-| `positionEase` | InOutQuad | Ease on the traverse step. |
-| `pourTiltAngle` | 55° | Lip-to-target tilt at the pour pose. |
-| `pourMidLateralOffset` | 0.72m | Source-side offset of the held mid-body from the target. |
-| `pourMidHeight` | 2.7m | World Y of the held mid-body at the pour pose. |
-| `pourLipClearance` | 0.05m | Extra clearance above the target rim. |
+| `pourTiltAngleFull` | 35° | Tilt at fill = 1.0. |
+| `pourTiltAngleEmpty` | 80° | Tilt at fill = 0.0. |
+| `pourLipClearance` | 0m | Gap between source rim and target rim. |
+| `pourHeightOffset` | 0m | Extra Y added to source pour position. |
+| `pourCenterBias` | 0 | Horizontal lerp toward target centre (0..1). |
+| `dynamicPoseDamping` | 6 | Exponential lerp toward the fill-aware pose during pour. |
 | `disengageDuration` | 0.32s | Tween back to free-drag. |
 | `returnDuration` | 0.45s | Tween back to rest after release. |
-| `perUnitPourSeconds` | 0.85s (on `HexSortBoardController`) | Time to transfer one unit. |
-| `engageEnterDistance` | 1.05m (on `HexSortBoardController`) | Cursor distance to start a pour. |
-| `engageExitDistance` | 1.55m (on `HexSortBoardController`) | Cursor distance to stop a pour. |
+| `perUnitPourSeconds` | 0.85s (`HexSortBoardController`) | Time to transfer one unit. |
+| `engageEnterDistance` | 1.05m (`HexSortBoardController`) | Cursor distance to start a pour. |
+| `engageExitDistance` | 1.55m (`HexSortBoardController`) | Cursor distance to stop a pour. |
+| `pickWorldRadius` | 0.85m (`HexSortBoardController`) | Drag-plane radius for fallback glass pickup. |
+| `pickScreenRadius` | 60px (`HexSortBoardController`) | Screen-space radius for fallback glass pickup. |
 
-Today these are tweakable by editing the source defaults; once glasses are authored as prefabs, the same fields become inspector-tunable.
+Camera framing tunables now live on `CameraConfig` (`pitch`, `framePadding`, `zoomInFactor`, `zoomOutFactor`, sensitivities, etc.); see `docs/architecture.md`.
+
+Liquid colours come from `ColorsConfig` (one entry per `LiquidColorId`); the material library and board controller both look up via that palette.
 
 ## Stream Trajectory
 

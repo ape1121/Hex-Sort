@@ -128,10 +128,12 @@ MonoBehaviour:
   riseEase: 6
   positionDuration: 0.42
   positionEase: 7
-  pourTiltAngleFull: 35
-  pourTiltAngleEmpty: 80
-  pourLipClearance: 0.05
-  dynamicPoseDamping: 6
+  pourTiltAngleFull: 60
+  pourTiltAngleEmpty: 90
+  pourLipClearance: 0
+  pourHeightOffset: 0.5
+  pourCenterBias: 0.103
+  dynamicPoseDamping: 4
   disengageDuration: 0.32
   disengageEase: 7
   returnDuration: 0.45

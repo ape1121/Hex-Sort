@@ -29,6 +29,11 @@ public sealed class GlassPourAnimator : MonoBehaviour
     [SerializeField] private float pourTiltAngleEmpty = 80f;
     [Tooltip("Gap (in world units) between the source's tilted rim edge and the target's rim edge. 0 = lips touch exactly.")]
     [SerializeField] private float pourLipClearance = 0f;
+    [Tooltip("Extra height (world units) added to the source's pour position so it pours from above the target rim.")]
+    [SerializeField] private float pourHeightOffset = 0f;
+    [Tooltip("0 = source sits at the target's edge; 1 = source sits directly above the target's centre. Use small values (~0.1-0.3) to nudge the source toward the target.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float pourCenterBias = 0f;
     [Tooltip("How fast the pose lerps toward the dynamic-fill pose during the Pouring state. Higher = snappier.")]
     [SerializeField] private float dynamicPoseDamping = 6f;
 
@@ -328,7 +333,13 @@ public sealed class GlassPourAnimator : MonoBehaviour
         Vector3 lipWorldOffset = pourRotation * lipLocalOffset;
 
         // Solve: source.position + lipWorldOffset == desiredLipWorld.
-        return desiredLipWorld - lipWorldOffset;
+        Vector3 basePosition = desiredLipWorld - lipWorldOffset;
+
+        // Optional offsets: lift the source above the rim, and pull it horizontally toward the
+        // target's centre. Centre bias is applied on the XZ plane only — height stays separate.
+        Vector3 horizontalToCenter = target.transform.position - basePosition;
+        horizontalToCenter.y = 0f;
+        return basePosition + (horizontalToCenter * Mathf.Clamp01(pourCenterBias)) + (Vector3.up * pourHeightOffset);
     }
 
     private void KillTweens()

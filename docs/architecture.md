@@ -3,60 +3,58 @@
 ## Module Split
 
 - `Core`
-  - `LiquidColorId`
-  - `GlassState`
-  - `PourMove`
-  - Owns deterministic puzzle rules only.
+  - `LiquidColorId`, `GlassState`, `PourMove`
+  - `HexSortManager` — scene composer; resolves level + configs, instantiates glasses, wires controllers, listens for completion.
+  - `HexSortSceneBootstrapper` — `App.Game` lifecycle adapter for the scene.
+  - `HexSortLevelData` — per-level fill ScriptableObject.
+  - `HexSortLevelGenerator` — static Hanoi-style reverse-move scrambler, guaranteed solvable.
+
+- `Data` (`Ape.Data`, lives under `Assets/Common`)
+  - `GameConfig` — top-level container (`Levels`, `Board`, `Camera`, `Colors`).
+  - `LevelsConfig` — ordered `HexSortLevelData[]` with `GetLevel(index)` / `GetLevelLooped(index)`.
+  - `BoardConfig` — glass spawn layout (capacity default, spacing, Y, board extents, board pivot).
+  - `CameraConfig` — pitch, frame padding, zoom factors, pan/zoom/orbit feel.
+  - `ColorsConfig` — `LiquidColorId → Color` palette.
 
 - `Input`
-  - `HexSortInputManager`
-  - Translates mouse and touch into normalized primary drag, camera pan, and zoom signals.
+  - `HexSortInputManager` — primary press/drag, multi-touch pinch + pan, claim-based gesture arbitration via `TryClaimUnhandledDrag`.
 
 - `Camera`
-  - `HexSortCameraController`
-  - Owns camera pivot, smoothing, pan, and zoom.
+  - `HexSortCameraController` — yaw orbit, pinch/wheel zoom, two-finger pan; auto-fits camera distance to board extents using FOV + aspect + pitch foreshortening; refits on screen-size change.
 
 - `Gameplay`
-  - `HexSortBoardController`
-  - `HexSortGlassController`
-  - `GlassPourAnimator`
-  - Owns hold/release flow, drag-to-pour orchestration, target evaluation, move application, and DOTween-driven hold/pour/release animation.
+  - `HexSortBoardController` — pickup, target evaluation with hysteresis, continuous pour preview, partial-commit on disengage, fires `MoveApplied` on each commit. Robust pickup (`RaycastAll` + world-radius + screen-radius fallbacks); held glass moves to IgnoreRaycast layer during hold.
+  - `HexSortGlassController` — per-glass facade; owns `GlassState`, exposes `DisplayedFillUnits` for smooth tilt, forwards collision peers to the animator.
+  - `GlassPourAnimator` — DOTween state machine (`Idle / FreeDragging / Engaging / Pouring / Disengaging / Returning`). Fill-aware dynamic tilt; configurable lip clearance, pour height offset, pour center bias; `Physics.ComputePenetration` peer collision resolution.
 
 - `View`
-  - `HexSortMaterialLibrary`
-  - `GlassVisualBuilder`
-  - `GlassLiquidView`
-  - `LiquidMeshFactory`
-  - `LiquidDynamicsSample`
-  - `PourStreamView`
-  - `RuntimeViewUtility`
-  - `Shaders/HexSortLiquid.shader`
-  - Owns runtime visual construction and presentation effects.
-
-- `Bootstrap`
-  - `LiquidSortDemoBootstrap`
-  - Creates the demo scene setup and wires dependencies.
+  - `HexSortMaterialLibrary` — palette seeded from `ColorsConfig`; templates for highlights, streams, droplets, liquid material instances.
+  - `GlassLiquidView` — body cylinder + horizontal surface disc per glass; spring-damper slosh; shader uniform updates.
+  - `LiquidMeshFactory`, `LiquidDynamicsSample`, `RuntimeViewUtility`, `PourStreamView`.
+  - `Shaders/HexSortLiquid.shader` — implicit-cylinder clipped surface, world-Y layer boundaries, foam, caustics.
 
 ## Dependency Direction
 
-- `Bootstrap -> Input / Camera / Gameplay / View / Core`
-- `Gameplay -> Core / View`
-- `View -> Core`
-- `Input -> none`
-- `Core -> none`
+- `Core` and `Data` are leaves.
+- `Input` depends on nothing game-specific.
+- `Camera`, `View` depend on `Core` + `Data`.
+- `Gameplay` depends on `Core` + `View`.
+- `HexSortManager` (Core) wires everything together but is itself referenced only from the scene.
 
 ## Why This Split
 
-- The previous prototype coupled puzzle rules, camera logic, drag handling, liquid rendering, and scene construction in one file.
-- That made interaction feel work expensive because every change touched unrelated behavior.
-- The new structure keeps puzzle correctness isolated while allowing drag feel, liquid visuals, and camera tuning to evolve independently.
+- Puzzle rules stay isolated from rendering and input feel.
+- Tuning lives in `GameConfig` sections so designers can iterate without code changes.
+- View, input, and camera modules can be reused or swapped without touching gameplay logic.
 
 ## Current Limitations
 
-- Materials are created at runtime, so the visual system is structured but not yet art-pipeline ready (the liquid shader is an authored `.shader` file, but its instanced materials are constructed in code).
-- The drag-to-pour logic is much better than click-to-click, but still uses tuned heuristics rather than a more physical lip/volume model. Tilt is mapped to a smoothstep curve and lift is empirically tuned.
-- Fill level does not perform exact volume conservation when the glass tilts; instead it is clamped at the rim's lowest world-Y to prevent overflow artefacts.
+- Liquid materials are still constructed at runtime from a single authored shader; URP/material assets are not yet authored.
+- Pour trigger is proximity + dynamic-tilt based, not volume- or lip-physics based.
+- Fill level is clamped at the rim's lowest world-Y rather than conserving volume.
+- No undo / restart UI yet — completion event fires but isn't wired to a flow.
 
 ## Next Architectural Step
 
-- Move visual tuning into authored assets and data objects once the interaction loop is stable.
+- Move per-glass tuning (rim radius, capacity-derived heights, etc.) into prefabs.
+- Promote runtime materials to authored URP assets / shader graphs.

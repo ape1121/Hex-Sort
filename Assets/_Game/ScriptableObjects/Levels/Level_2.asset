@@ -1,0 +1,23 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0617c386321850b4e8524bd5c453faaf, type: 3}
+  m_Name: Level_2
+  m_EditorClassIdentifier: Assembly-CSharp::HexSortLevelData
+  capacity: 4
+  parMoves: 60
+  glasses:
+  - units: 0100000004000000
+  - units: 020000000300000002000000
+  - units: 0400000003000000
+  - units: 0400000001000000
+  - units: 02000000010000000400000001000000
+  - units: 030000000200000003000000

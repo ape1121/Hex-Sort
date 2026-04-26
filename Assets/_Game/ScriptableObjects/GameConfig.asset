@@ -14,3 +14,5 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   Levels: {fileID: 11400000, guid: 6c1871e1bb6fbad4493d6d86b8c0c807, type: 2}
   Board: {fileID: 11400000, guid: 43cfe433f69476643976aff9eb5174eb, type: 2}
+  Camera: {fileID: 11400000, guid: 4e3bacd6fc153284f8dd12ae010da95f, type: 2}
+  Colors: {fileID: 11400000, guid: d50078e7051cb2f468dfbcd33b070c19, type: 2}

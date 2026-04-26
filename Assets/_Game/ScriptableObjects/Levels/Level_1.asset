@@ -13,6 +13,7 @@ MonoBehaviour:
   m_Name: Level_1
   m_EditorClassIdentifier: Assembly-CSharp::HexSortLevelData
   capacity: 3
+  parMoves: 25
   glasses:
   - units: 010000000300000001000000
   - units: 02000000
