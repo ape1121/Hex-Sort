@@ -1,0 +1,18 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 91f292b27781948f4bc05e7409dd146c, type: 3}
+  m_Name: AppConfig
+  m_EditorClassIdentifier: 
+  GameConfig: {fileID: 11400000, guid: 0d9743432439244c9a5e04e7f511a853, type: 2}
+  SoundsConfig: {fileID: 11400000, guid: 6120f60310ea2461ab8a5f74241825c5, type: 2}
+  GameSceneName: Game
+  SceneTransitionDuration: 0.5
